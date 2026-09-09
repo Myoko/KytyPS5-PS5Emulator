@@ -46,6 +46,39 @@ namespace {
 	return static_cast<bool>(properties.optimalTilingFeatures & feature);
 }
 
+[[nodiscard]] vk::Format BlockStorageAliasFormat(const ImageInfo& info) {
+	switch (Prospero::BlockCompressedBytesPerBlock(info.guest_format)) {
+		case 8u: return vk::Format::eR32G32Uint;
+		case 16u: return vk::Format::eR32G32B32A32Uint;
+		default: return vk::Format::eUndefined;
+	}
+}
+
+[[nodiscard]] bool ImageCreateInfoSupported(GraphicContext& graphics, const ImageInfo& info,
+                                            const vk::ImageCreateInfo& create,
+                                            vk::ImageFormatProperties& properties) {
+	const auto query = [&](vk::Format format, vk::ImageUsageFlags usage,
+	                       vk::ImageCreateFlags flags, vk::ImageFormatProperties& result) {
+		return graphics.GetImageFormatProperties(format, create.imageType, create.tiling, usage,
+		                                         flags, &result) == vk::Result::eSuccess;
+	};
+	if (query(create.format, create.usage, create.flags, properties)) {
+		return true;
+	}
+	const auto alias = BlockStorageAliasFormat(info);
+	if (alias == vk::Format::eUndefined ||
+	    !(create.flags & vk::ImageCreateFlagBits::eExtendedUsage) ||
+	    !(create.usage & vk::ImageUsageFlagBits::eStorage)) {
+		return false;
+	}
+	vk::ImageFormatProperties alias_properties {};
+	return query(create.format, create.usage & ~vk::ImageUsageFlagBits::eStorage, create.flags,
+	             properties) &&
+	       query(alias, vk::ImageUsageFlagBits::eStorage,
+	             create.flags & ~vk::ImageCreateFlagBits::eBlockTexelViewCompatible,
+	             alias_properties);
+}
+
 [[nodiscard]] vk::ImageUsageFlags ImageUsageFlags(GraphicContext& graphics, const ImageInfo& info) {
 	const auto properties = graphics.GetFormatProperties(info.pixel_format);
 	auto       usage = vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eTransferDst;
@@ -679,9 +712,7 @@ Image::Image(GraphicContext& graphics, CommandScheduler& scheduler, const ImageI
 	create.samples       = vulkan_sample_count(backing.samples);
 
 	vk::ImageFormatProperties properties {};
-	if (graphics.GetImageFormatProperties(create.format, create.imageType, create.tiling,
-	                                      create.usage, create.flags,
-	                                      &properties) != vk::Result::eSuccess ||
+	if (!ImageCreateInfoSupported(graphics, info, create, properties) ||
 	    !static_cast<bool>(properties.sampleCounts & create.samples)) {
 		EXIT("image format does not support required usage: format=%d type=%d usage=0x%x "
 		     "flags=0x%x samples=%u\n",
