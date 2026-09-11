@@ -30,7 +30,7 @@ import { playSfx } from "../lib/sfx";
  *    same as the physical d-pad, feeding useGamepadActions' up/down/left/
  *    right actions below instead of a second, continuous input model. The
  *    real OS cursor is still hidden via CSS whenever gamepad input is the
- *    one driving focus -- see setGamepadActive.
+ *    one driving -- see setPointerHidden.
  */
 
 // input:not([type="checkbox"]):not([type="radio"]) is deliberate: a raw
@@ -140,16 +140,28 @@ export function FocusNavProvider({
   const focusedRef = useRef<HTMLElement | null>(null);
   const [focusedEl, setFocusedEl] = useState<HTMLElement | null>(null);
   const isActiveRef = useRef(false);
-  // Mirrors isActiveRef onto the real cursor (theme.css hides it under
-  // [data-gamepad-active="true"]) -- gamepad-or-keyboard focus and a
-  // visible mouse arrow are mutually exclusive states, same as isActiveRef
-  // already models; this just makes it visible instead of only affecting
-  // .ps-focused. Call at every isActiveRef.current assignment instead of
-  // writing the ref directly.
+  // Pointer visibility only (theme.css hides the real cursor under
+  // [data-gamepad-active="true"]) -- tracks which input modality is
+  // currently driving, independent of whether a focus ring exists. Gamepad
+  // input (even a press that moves no focus, or one swallowed by a scope)
+  // sets this true; real mouse movement is the only thing that clears it,
+  // from every state including inside an open overlay/modal. Split out from
+  // setGamepadActive below so the two can diverge: a mouse click that opens
+  // an overlay still calls setFocus (isActiveRef true, a ps-focused ring is
+  // legitimate) without hiding the cursor.
+  const setPointerHidden = useCallback((hidden: boolean) => {
+    document.documentElement.dataset.gamepadActive = hidden ? "true" : "false";
+  }, []);
+  // Mirrors isActiveRef onto pointer visibility -- gamepad-or-keyboard focus
+  // and a visible mouse arrow are mutually exclusive states, same as
+  // isActiveRef already models. Call at every isActiveRef.current assignment
+  // instead of writing the ref directly. See setPointerHidden above for the
+  // other, independent way the cursor is hidden (any gamepad input, focus
+  // move or not).
   const setGamepadActive = useCallback((active: boolean) => {
     isActiveRef.current = active;
-    document.documentElement.dataset.gamepadActive = active ? "true" : "false";
-  }, []);
+    setPointerHidden(active);
+  }, [setPointerHidden]);
   // A single in-flight boundary-scroll retry (see processDirection below) --
   // without this, holding a direction at a scroll boundary under the
   // stick's 90ms full-tilt repeat queues a pile of overlapping polls, each
@@ -399,6 +411,12 @@ export function FocusNavProvider({
   // it through a ref internally, so that recreation never tears down the
   // underlying subscription.
   const handleGamepadIntent = useCallback((intent: NavIntent) => {
+    // Any gamepad input is a modality signal, even one swallowed by the
+    // text-entry guard below or one that moves no focus (confirm/back/menu)
+    // -- setFocus() alone used to be the only thing that hid the cursor, so
+    // pressing confirm/back/menu without first moving focus left the real
+    // mouse arrow visible over a gamepad-driven UI.
+    setPointerHidden(true);
     // The keyboard path below already guards text-entry fields (Escape and
     // the arrow keys must not fight typing); the gamepad path needs the
     // same guard -- without it, D-pad/stick navigation could steal focus
@@ -465,7 +483,7 @@ export function FocusNavProvider({
         break;
       }
     }
-  }, [processDirection, onBack, onMenu, findNearest, setFocus]);
+  }, [processDirection, onBack, onMenu, findNearest, setFocus, setPointerHidden]);
   useGamepadActions(handleGamepadIntent);
 
   // ---- right-stick free scroll --------------------------------------------
@@ -485,6 +503,10 @@ export function FocusNavProvider({
       const prevTs = lastTs;
       lastTs = now;
       if (scroll.x === 0 && scroll.y === 0) return;
+      // Same modality signal as handleGamepadIntent above -- a held stick
+      // scrolls content under the parked pointer without ever calling
+      // setFocus, so nothing else on this path would otherwise hide it.
+      setPointerHidden(true);
       if (prevTs === null) return;
       const dt = Math.min(now - prevTs, 50) / 1000;
       if (!focusedRef.current) return;
@@ -494,7 +516,7 @@ export function FocusNavProvider({
       if (!host) return;
       scrollRegionBy(host, scroll.y * SCROLL_PX_PER_SEC * dt, scroll.x * SCROLL_PX_PER_SEC * dt);
     });
-  }, []);
+  }, [setPointerHidden]);
 
   // ---- keyboard fallback --------------------------------------------------
   useEffect(() => {
@@ -560,14 +582,30 @@ export function FocusNavProvider({
     return () => window.removeEventListener("keydown", onKey);
   }, [processDirection, onBack, setGamepadActive]);
 
-  // ---- deactivate on mouse movement ---------------------------------------
+  // ---- restore cursor / deactivate on mouse movement -----------------------
   useEffect(() => {
     let debounce: ReturnType<typeof setTimeout>;
-    const onMouse = () => {
-      // Never while a scope is open -- an overlay/modal keeps its own
-      // internal ps-focused ring regardless of stray mouse movement over it
-      // (e.g. moving the mouse to reach the panel would otherwise clear the
-      // very focus that just landed there on open).
+    // WebKitGTK re-fires mousemove at the pointer's last on-screen position
+    // when content scrolls underneath it (gamepad d-pad/stick navigation
+    // does this constantly), which is not a real mouse movement -- without
+    // this coordinate check, holding a direction to scroll would flash the
+    // real cursor back in on every such synthetic event.
+    let lastX = -1;
+    let lastY = -1;
+    const onMouse = (e: MouseEvent) => {
+      if (e.clientX === lastX && e.clientY === lastY) return;
+      lastX = e.clientX;
+      lastY = e.clientY;
+      // Restore immediately and unconditionally, including while a scope
+      // (overlay/modal) is open -- previously the scope guard below applied
+      // to this too, so the real cursor stayed hidden inside Control
+      // Center/Power Menu/any Dropdown no matter how far the mouse moved.
+      setPointerHidden(false);
+      // The ps-focused ring, in contrast, never clears while a scope is
+      // open -- an overlay/modal keeps its own internal ring regardless of
+      // stray mouse movement over it (e.g. moving the mouse to reach the
+      // panel would otherwise clear the very focus that just landed there
+      // on open).
       if (!isActiveRef.current || scopeStackRef.current.length > 0) return;
       clearTimeout(debounce);
       debounce = setTimeout(() => {
@@ -582,7 +620,7 @@ export function FocusNavProvider({
       window.removeEventListener("mousemove", onMouse);
       clearTimeout(debounce);
     };
-  }, [setGamepadActive]);
+  }, [setGamepadActive, setPointerHidden]);
 
   // ---- clear on view change, with per-view focus persistence --------------
   useEffect(() => {

@@ -253,12 +253,13 @@ body::after {
 }
 
 /* ---- gamepad cursor hiding ----------------------------------------------
-   FocusNav.tsx's setGamepadActive sets this attribute wherever it currently
-   sets isActiveRef -- gamepad/keyboard focus and a visible mouse arrow are
+   FocusNav.tsx's setPointerHidden sets this attribute on any gamepad input
+   (a d-pad/stick move, a scroll tick, confirm/back/menu -- not only when
+   focus actually moves) -- gamepad input and a visible mouse arrow are
    mutually exclusive at the UI level (owner rule, 2026-09-09): the real
-   pointer must never show while a controller (d-pad or the stick-as-
-   pointer) is what's actually driving. Real mouse movement already clears
-   this (see FocusNav's mousemove listener), which restores the cursor. */
+   pointer must never show while a controller is what's actually driving.
+   Any real mouse movement clears this immediately, from every state
+   including an open overlay/modal (see FocusNav's mousemove listener). */
 :root[data-gamepad-active="true"],
 :root[data-gamepad-active="true"] * {
   cursor: none !important;
