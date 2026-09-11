@@ -12,6 +12,7 @@ import { LibraryView } from "./views/Library";
 import { SettingsView } from "./views/Settings";
 import { LogsView } from "./views/Logs";
 import { ProfileView } from "./views/Profile";
+import { ExitConfirmView } from "./views/ExitConfirm";
 import { loadPrefs, refreshLibrary } from "./store/library";
 import { ensureRunListeners, syncRunningState } from "./store/run";
 import { refreshPlayHistory } from "./store/playtime";
@@ -25,7 +26,7 @@ import { ensureDefaultProfile } from "./lib/profiles";
 // TrophiesView inline as one of its own tabs (see components/GameDetail.tsx)
 // instead of navigating the whole app away from Library, so there is no
 // standalone trophies route to switch to any more.
-export type ViewId = "home" | "library" | "settings" | "logs" | "profile";
+export type ViewId = "home" | "library" | "settings" | "logs" | "profile" | "exit";
 
 export default function App() {
   const [view, setView] = useState<ViewId>("home");
@@ -126,6 +127,7 @@ export default function App() {
           {view === "settings" && <SettingsView />}
           {view === "logs" && <LogsView />}
           {view === "profile" && <ProfileView onNavigate={setView} />}
+          {view === "exit" && <ExitConfirmView onNavigate={setView} />}
         </AppShell>
 
         <ControlCenter

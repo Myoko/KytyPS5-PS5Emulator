@@ -33,6 +33,10 @@ export interface Catalog {
     quit: string;
     cancel: string;
   };
+  exitConfirm: {
+    title: string;
+    confirm: string;
+  };
   restMode: {
     status: string;
   };
@@ -303,6 +307,7 @@ export interface Catalog {
     minimize: string;
     restore: string;
     maximize: string;
+    exitLauncher: string;
   };
   playtime: {
     lessThanMinute: string;
@@ -331,6 +336,10 @@ const en: Catalog = {
     rest: "Enter rest mode",
     quit: "Quit Kyty Launcher",
     cancel: "Cancel",
+  },
+  exitConfirm: {
+    title: "Exit Kyty Launcher?",
+    confirm: "Exit launcher",
   },
   restMode: {
     status: "Resting",
@@ -654,6 +663,7 @@ const en: Catalog = {
     minimize: "Minimize",
     restore: "Restore",
     maximize: "Maximize",
+    exitLauncher: "Exit launcher",
   },
   playtime: {
     lessThanMinute: "< 1 min",

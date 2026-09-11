@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { ChevronLeft, Copy, Maximize2, Minimize2, Minus, Search, Settings, Square, X } from "lucide-react";
+import { ChevronLeft, Copy, LogOut, Maximize2, Minimize2, Minus, Search, Settings, Square, X } from "lucide-react";
 import { useStore } from "../store/observable";
 import { isRunningStore, runningGameStore } from "../store/run";
 import { gamesStore } from "../store/library";
@@ -102,8 +102,11 @@ export function TopBar({ view, onNavigate, onBack }: { view: ViewId; onNavigate:
         </button>
 
         {/* Fullscreen has no window chrome to control -- minimize/maximize
-           are meaningless there and close is reachable via Settings > Exit
-           instead (added specifically because this row disappears). */}
+           are meaningless there, and close swaps for a single Exit Launcher
+           icon in this same slot (this row would otherwise disappear
+           outright). Routes to a confirm page (App.tsx's "exit" view)
+           instead of closing immediately, unlike the window-chrome close
+           button below. */}
         {!fullscreen && (
           <div className={styles.windowButtons}>
             <button type="button" className={styles.winBtn} onClick={minimize} title={t("topbar.minimize")}>
@@ -114,6 +117,19 @@ export function TopBar({ view, onNavigate, onBack }: { view: ViewId; onNavigate:
             </button>
             <button type="button" className={`${styles.winBtn} ${styles.winBtnClose}`} onClick={close} title={t("common.close")}>
               <X size={16} />
+            </button>
+          </div>
+        )}
+        {fullscreen && (
+          <div className={styles.windowButtons}>
+            <button
+              type="button"
+              className={`${styles.winBtn} ${styles.winBtnClose}`}
+              onClick={() => onNavigate("exit")}
+              title={t("topbar.exitLauncher")}
+              aria-label={t("topbar.exitLauncher")}
+            >
+              <LogOut size={16} />
             </button>
           </div>
         )}
