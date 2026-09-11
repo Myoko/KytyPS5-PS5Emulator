@@ -25,6 +25,16 @@ pub struct LauncherPrefs {
     pub emulator_path_override: Option<String>,
     #[serde(default)]
     pub launch_mode: LaunchMode,
+    /// Emulator Settings toggle, default off: exits the launcher's own
+    /// GUI process the moment a game starts (in-app launch mode only) and
+    /// hands the emulator to a detached supervisor (see `supervisor.rs`)
+    /// that relaunches the launcher once the game closes. Off by default
+    /// because it changes what a user expects from "closing" a game --
+    /// getting the launcher back instead of a dead desktop -- and because
+    /// it only helps on machines where the launcher's own memory/CPU use
+    /// actually competes with the emulator for the same GPU/RAM.
+    #[serde(default)]
+    pub auto_close_on_launch: bool,
 }
 
 const FILE_NAME: &str = "prefs.json";
@@ -58,9 +68,11 @@ mod tests {
         let prefs = LauncherPrefs {
             emulator_path_override: Some("/opt/kyty_emulator".to_string()),
             launch_mode: LaunchMode::Terminal,
+            auto_close_on_launch: true,
         };
         let json = serde_json::to_value(&prefs).unwrap();
         assert_eq!(json["emulatorPathOverride"], "/opt/kyty_emulator");
+        assert_eq!(json["autoCloseOnLaunch"], true);
         assert!(json.get("emulator_path_override").is_none());
     }
 
@@ -70,10 +82,19 @@ mod tests {
         let prefs = LauncherPrefs {
             emulator_path_override: Some("/opt/kyty/kyty_emulator".to_string()),
             launch_mode: LaunchMode::Terminal,
+            auto_close_on_launch: true,
         };
         save(dir.path(), &prefs).unwrap();
         let reloaded = load(dir.path());
         assert_eq!(reloaded.emulator_path_override, prefs.emulator_path_override);
         assert_eq!(reloaded.launch_mode, LaunchMode::Terminal);
+        assert_eq!(reloaded.auto_close_on_launch, true);
+    }
+
+    #[test]
+    fn auto_close_on_launch_defaults_to_off() {
+        let dir = tempfile::tempdir().unwrap();
+        let prefs = load(dir.path());
+        assert_eq!(prefs.auto_close_on_launch, false);
     }
 }

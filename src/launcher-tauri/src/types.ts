@@ -77,6 +77,7 @@ export type LaunchMode = "inapp" | "terminal";
 export interface LauncherPrefs {
   emulatorPathOverride: string | null;
   launchMode: LaunchMode;
+  autoCloseOnLaunch: boolean;
 }
 
 export interface BrowseEntry {

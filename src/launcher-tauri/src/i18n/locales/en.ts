@@ -146,7 +146,14 @@ export interface Catalog {
       displayMode: { title: string; full: string; window: string };
       textSize: { title: string; small: string; standard: string; large: string; extraLarge: string };
     };
-    launch: { title: string; mode: string; modeInApp: string; modeTerminal: string };
+    launch: {
+      title: string;
+      mode: string;
+      modeInApp: string;
+      modeTerminal: string;
+      autoClose: string;
+      autoCloseHint: string;
+    };
     gamepad: { title: string; description: string; deadzone: string; deadzoneLabel: string; configureButtons: string };
     audio: {
       title: string;
@@ -467,6 +474,9 @@ const en: Catalog = {
       mode: "Launch mode",
       modeInApp: "In-app console (recommended)",
       modeTerminal: "External terminal",
+      autoClose: "Close launcher when a game starts",
+      autoCloseHint:
+        "Frees the launcher's own memory and CPU while you play, then reopens it automatically once the game closes. In-app launch mode only.",
     },
     gamepad: {
       title: "Gamepad",

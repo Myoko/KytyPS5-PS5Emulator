@@ -590,6 +590,18 @@ function DefaultsCategory() {
         </div>
       )}
 
+      {prefs && (
+        <div className={styles.row}>
+          <span className={styles.rowLabel}>{t("settings.launch.autoClose")}</span>
+          <Toggle
+            ariaLabel={t("settings.launch.autoClose")}
+            checked={prefs.autoCloseOnLaunch}
+            onChange={(v) => void savePrefs({ ...prefs, autoCloseOnLaunch: v })}
+          />
+        </div>
+      )}
+      {prefs && <p className={styles.blockHint}>{t("settings.launch.autoCloseHint")}</p>}
+
       <ConfigForm value={cfg.global} onChange={(next) => configStore.set({ ...cfg, global: next })} />
       <div className={styles.actionRow}>
         <button className="pill-button primary" onClick={saveGlobal}>

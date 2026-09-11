@@ -13,6 +13,7 @@ mod prefs;
 mod qsettings;
 mod savedata;
 mod scanner;
+pub mod supervisor;
 mod trophy;
 
 #[cfg(target_os = "linux")]
@@ -153,8 +154,27 @@ fn run_game(
         gamepad_cfg.gamepad_deadzone,
     );
 
-    let mode = prefs::load(&app_data_dir(&app)).launch_mode;
-    let result = match mode {
+    let launcher_prefs = prefs::load(&app_data_dir(&app));
+
+    // Auto-close only applies to in-app launches: external-terminal mode
+    // already runs the emulator fully independent of the launcher process,
+    // so there is nothing here for it to hand off.
+    if launcher_prefs.launch_mode == prefs::LaunchMode::InApp && launcher_prefs.auto_close_on_launch {
+        let spec = supervisor::SupervisedLaunch {
+            interpreter: binary,
+            args,
+            working_dir: dir,
+            log_path: app_data_dir(&app).join("emulator-session.log"),
+            app_data_dir: app_data_dir(&app),
+            game_path: info.game_path.clone(),
+        };
+        supervisor::spawn(&spec).map_err(|e| e.to_string())?;
+        let _ = playtime::record_start(&app_data_dir(&app), &info.game_path);
+        app.exit(0);
+        return Ok(());
+    }
+
+    let result = match launcher_prefs.launch_mode {
         prefs::LaunchMode::InApp => {
             emulator::spawn_in_app(app.clone(), state.run_state.clone(), &binary, &args, &dir)
                 .map_err(|e| e.to_string())
@@ -210,6 +230,16 @@ fn stop_game(state: State<AppState>) -> Result<(), String> {
 #[tauri::command]
 fn is_game_running(state: State<AppState>) -> bool {
     emulator::is_running(&state.run_state)
+}
+
+/// Whether this instance was relaunched by `supervisor.rs` after an
+/// auto-close-on-launch game session ended, rather than a normal cold
+/// start -- the frontend uses this to skip BootController's splash
+/// animation, since the user just watched it a few seconds ago on the way
+/// into the game.
+#[tauri::command]
+fn is_resumed_launch() -> bool {
+    std::env::var_os("KYTY_RESUMED").is_some()
 }
 
 // ---- Saved data -------------------------------------------------------------
@@ -599,6 +629,7 @@ pub fn run() {
             run_game,
             stop_game,
             is_game_running,
+            is_resumed_launch,
             get_play_history,
             get_library_stats,
             record_play_stop,

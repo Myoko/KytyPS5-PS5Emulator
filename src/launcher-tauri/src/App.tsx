@@ -1,5 +1,6 @@
 // Kyty Launcher, author: Hyphaed.
 import { useCallback, useEffect, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { AppShell } from "./shell/AppShell";
 import { BootController } from "./boot/BootController";
 import { ControlCenter } from "./overlays/ControlCenter";
@@ -30,11 +31,19 @@ export default function App() {
   const [view, setView] = useState<ViewId>("home");
   const [selectedGamePath, setSelectedGamePath] = useState<string | null>(null);
   const [dataReady, setDataReady] = useState(false);
+  // null = not yet known. BootController reads this only once, at mount
+  // (its own useState initializer), so nothing renders below until this
+  // resolves -- otherwise a resumed launch would still flash the boot
+  // animation for the one frame before the answer came back.
+  const [skipBootIntro, setSkipBootIntro] = useState<boolean | null>(null);
   const [controlCenterOpen, setControlCenterOpen] = useState(false);
   const [powerMenuOpen, setPowerMenuOpen] = useState(false);
   const [restMode, setRestMode] = useState(false);
 
   useEffect(() => {
+    void invoke<boolean>("is_resumed_launch")
+      .then(setSkipBootIntro)
+      .catch(() => setSkipBootIntro(false));
     warmSfx();
     playSfx("boot");
     void reapplyStoredOutputSink();
@@ -92,8 +101,14 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
+  // tauri.conf.json's window backgroundColor is the same near-black as
+  // BootController's own first phase, so this brief gap (waiting to learn
+  // whether to skip the intro) reads as more black, not a flash of
+  // unstyled content.
+  if (skipBootIntro === null) return null;
+
   return (
-    <BootController dataReady={dataReady}>
+    <BootController dataReady={dataReady} skipIntro={skipBootIntro}>
       <FocusNavProvider resetKey={view} onBack={handleBack} onMenu={handleMenu}>
         <AppShell view={view} onNavigate={setView} onBack={handleBack} dimmed={restMode}>
           {view === "home" && (

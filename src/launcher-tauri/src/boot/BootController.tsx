@@ -26,13 +26,26 @@ const DATA_READY_CEILING_MS = 6000;
  * the overlay clears) -- this only draws the BOOT_BLACK -> ... -> READY
  * overlay on top and fades it away, per 01-motion-system.md's boot sequence
  * and 04-tauri-implementation.md's boot state machine. */
-export function BootController({ dataReady, children }: { dataReady: boolean; children: ReactNode }) {
-  const [phase, setPhase] = useState<BootPhase>("black");
-  const [chainDone, setChainDone] = useState(false);
-  const skippedRef = useRef(false);
+export function BootController({
+  dataReady,
+  skipIntro = false,
+  children,
+}: {
+  dataReady: boolean;
+  /** Skips the whole BOOT_SEQUENCE animation and starts straight at
+   * "ready" -- used when this instance was relaunched by the auto-close
+   * supervisor (supervisor.rs) rather than a cold start: the user just
+   * watched this same splash a few seconds ago on the way into the game. */
+  skipIntro?: boolean;
+  children: ReactNode;
+}) {
+  const [phase, setPhase] = useState<BootPhase>(skipIntro ? "ready" : "black");
+  const [chainDone, setChainDone] = useState(skipIntro);
+  const skippedRef = useRef(skipIntro);
   const t = useT();
 
   useEffect(() => {
+    if (skipIntro) return;
     let cancelled = false;
     const timers: ReturnType<typeof setTimeout>[] = [];
     let idx = 0;
@@ -52,6 +65,7 @@ export function BootController({ dataReady, children }: { dataReady: boolean; ch
       cancelled = true;
       timers.forEach(clearTimeout);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // READY once the boot chain has finished AND data has loaded -- whichever
