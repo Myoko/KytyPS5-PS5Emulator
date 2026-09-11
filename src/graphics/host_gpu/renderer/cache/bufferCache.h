@@ -59,6 +59,21 @@ public:
 	[[nodiscard]] Buffer* GetBdaPageTableBuffer() noexcept { return &m_bda_pagetable_buffer; }
 	[[nodiscard]] Buffer* GetFaultBuffer() noexcept { return m_fault_manager.GetFaultBuffer(); }
 	[[nodiscard]] std::pair<Buffer*, uint64_t> ObtainBufferForImage(uint64_t vaddr, uint64_t size);
+	// ASTRO's Playroom Bug A fix (workflow/astro_playroom_issues.md, session 36): a guest draw can
+	// legitimately request more sequential vertices than a bound vertex buffer's own NumRecords
+	// declares (confirmed live: index_count=4 over a NumRecords=3 buffer). Real PS5/RDNA2 hardware
+	// clamps the out-of-range fetch to the last valid record (confirmed this session via a live A/B
+	// force test); Vulkan's robustBufferAccess2 zero-fills instead, which does not match and
+	// produces a visibly wrong extra primitive. This builds a small host-visible buffer holding the
+	// real `real_records` of guest data verbatim, followed by the last real record repeated for
+	// `needed_records - real_records` slots, so the natural Vulkan vertex-fetch path (no shader
+	// changes) sees the same data real hardware would produce. `real_records` must be >= 1 and
+	// `needed_records` > `real_records`; the caller (AcquireVertexBuffers) only calls this when
+	// that's already established.
+	[[nodiscard]] std::pair<Buffer*, uint64_t> ObtainPaddedVertexBuffer(uint64_t vaddr,
+	                                                                    uint32_t stride,
+	                                                                    uint32_t real_records,
+	                                                                    uint32_t needed_records);
 	void FillBuffer(uint64_t vaddr, uint64_t size, uint32_t value, bool is_gds);
 	void CopyBuffer(uint64_t dst_vaddr, uint64_t src_vaddr, uint64_t size, bool dst_gds,
 	                bool src_gds);

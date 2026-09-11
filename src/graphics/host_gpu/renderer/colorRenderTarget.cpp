@@ -296,9 +296,34 @@ void RenderExecutor::ResolveRenderColorTarget(CommandBuffer& buffer, RenderColor
 	if (width >= 3000 && height >= 1800) {
 		static Log::RateLimit fullscreen_watch_limiter {"ClearWatchFullScreenTarget", 64};
 		if (fullscreen_watch_limiter.Hit()) {
+			// Bug B2 (astro_playroom_issues.md): distinguishes "this target's metadata is still
+			// PendingDcc/untracked" (never reached by any clear-shaped op -- a third, draw-based
+			// path, or a real one-time-reset/stale-image issue) from "tracked but clear_mask is
+			// still 0" (reached, but the fill code wasn't a recognized clear -- the 0x10 gap).
+			// CORRECTED (session 36, continued): m_surface_metas is keyed by the DCC *metadata*
+			// address (rt.dcc_addr.addr, set via desc.info.metadata.range.address in
+			// PrepareDccClear), NOT the color base address -- querying by rt.base.addr as this
+			// diagnostic previously did was always going to report "untracked" regardless of the
+			// real tracked state, since it's simply the wrong key. That earlier finding is
+			// retracted; re-querying by the correct key below.
+			uint32_t   clear_mask = 0;
+			const auto meta_state = rt.dcc_addr.addr != 0
+			                            ? m_context.GetTextureCache().DebugQueryMeta(
+			                                  rt.dcc_addr.addr, &clear_mask)
+			                            : TextureCache::DebugMetaState::Untracked;
+			using DebugMetaState = TextureCache::DebugMetaState;
 			LOGF("ClearWatchFullScreenTarget: slot=%" PRIu32 " addr=0x%010" PRIx64
-			     " extent=%ux%u dcc_enable=%s\n", rt_slot, rt.base.addr, width, height,
-			     rt.info.dcc_compression_enable ? "true" : "false");
+			     " dcc_addr=0x%010" PRIx64 " extent=%ux%u dcc_enable=%s meta=%s"
+			     " clear_mask=0x%08" PRIx32 "\n",
+			     rt_slot, rt.base.addr, rt.dcc_addr.addr, width, height,
+			     rt.info.dcc_compression_enable ? "true" : "false",
+			     meta_state == DebugMetaState::Untracked    ? "untracked"
+			     : meta_state == DebugMetaState::PendingDcc ? "pending_dcc"
+			     : meta_state == DebugMetaState::Dcc        ? "dcc"
+			     : meta_state == DebugMetaState::CMask      ? "cmask"
+			     : meta_state == DebugMetaState::FMask      ? "fmask"
+			                                                 : "htile",
+			     clear_mask);
 		}
 	}
 

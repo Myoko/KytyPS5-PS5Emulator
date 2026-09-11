@@ -197,6 +197,10 @@ std::filesystem::path  GetShaderCacheFile();
 uint64_t               GetLogRepeatLimit();
 uint64_t               GetLogFileMaxBytes();
 bool                   ShaderLogHashAllowed(uint64_t hash);
+// Distinct from ShaderLogHashAllowed(hash), which treats an empty filter list as "allow
+// everything" -- this is true only when --shader-log-filter-hash was actually passed, for call
+// sites that must not widen their own logging cost just because no filter happens to be set.
+bool                   ShaderLogHashExplicitlyFiltered(uint64_t hash);
 bool                   ForceShaderDiskCacheEnabled();
 std::filesystem::path  GetShaderLogFolder();
 

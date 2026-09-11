@@ -1150,6 +1150,15 @@ bool FlipQueue::Flip(uint32_t micros) {
 	r.cfg->mutex.Unlock();
 
 	Graphics::RenderDocOnGuestFlip(m_presenter.Renderer());
+	// ASTRO's Playroom Bug B2 fix -- REVERTED (workflow/astro_playroom_issues.md, session 36,
+	// continued): an unconditional per-flip re-arm of every tracked DCC surface fixed the
+	// onboarding-dialog stacking bug, but broke real, live gameplay elsewhere (missing/blinking
+	// graphics, confirmed by the user during actual play, not just the intro) -- both the
+	// unscoped and the full-screen-size-scoped versions of this call caused this. Disabled here
+	// rather than left active with a wrong heuristic; TextureCache::MarkAllTrackedDccSurfacesForClear
+	// and its call site are left in the tree for the next attempt at a correctly-scoped signal
+	// (see that function's comment and the workflow doc for what's already been ruled out).
+	// m_presenter.Renderer().GetTextureCache().MarkAllTrackedDccSurfacesForClear();
 
 	if (Config::GraphicsDebugDumpEnabled() &&
 	    Config::GetPrintfDirection() != Config::OutputDirection::Silent) {

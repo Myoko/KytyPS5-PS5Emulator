@@ -78,6 +78,32 @@ public:
 	// Record deferred DCC state while the original guest dispatch writes the metadata.
 	void               TrackDccFill(uint64_t address, uint64_t size, uint32_t fill_value);
 	[[nodiscard]] bool TouchMeta(uint64_t address, uint32_t slice, bool is_clear);
+	// ASTRO's Playroom Bug B2 investigation (workflow/astro_playroom_issues.md): diagnostic-only
+	// lookup for a specific tracked address's current metadata state/clear_mask, so a bind-site
+	// log can tell "never touched by any clear-shaped op" apart from "touched, but still
+	// PendingDcc". A separate public enum (rather than exposing the private MetaDataInfo::Type)
+	// keeps this diagnostic-only surface from widening the class's real interface.
+	enum class DebugMetaState : uint8_t { Untracked, PendingDcc, CMask, FMask, HTile, Dcc };
+	[[nodiscard]] DebugMetaState DebugQueryMeta(uint64_t address, uint32_t* clear_mask);
+
+	// ASTRO's Playroom Bug B2 fix (workflow/astro_playroom_issues.md, session 36, continued):
+	// real PS5/RDNA2 hardware applies a fast-clear/load-clear to per-frame DCC surfaces every
+	// frame -- confirmed this session both by live register/draw tracing (KytyPS5's own
+	// EliminateFastClear/TrackDccFill paths never touch this game's 5 rotating UI targets, yet
+	// they ARE registered as Type::Dcc, just permanently un-armed) and by cross-referencing a
+	// peer PS5 emulator (SharpEmu) that reached the exact same architecture after its own prior,
+	// cruder attempt at this ("the per-surface successor of the removed flip-arm heuristic").
+	// Called once per guest flip (videoOut.cpp): re-arms every currently-Dcc-tracked, full-screen
+	// surface's clear_mask via the SAME real, already-captured CB_COLOR_CLEAR_WORD0 register value
+	// DecodeDccClear's existing 0x20 (clear-to-register) path already decodes -- no new
+	// colour-sourcing plumbing, just re-arming the existing mechanism on a schedule that matches
+	// real hardware instead of only on the rare guest ops KytyPS5 currently recognizes as clears.
+	// CORRECTED (session 36, continued): originally applied to every Dcc-tracked surface
+	// unconditionally, which broke live gameplay (missing/blinking effect buffers -- likely
+	// motion-blur/bloom/reflection-style multi-frame-persistent targets getting force-reset every
+	// flip). Narrowed to full-screen-sized surfaces only; see MetaDataInfo::width/height and this
+	// function's own body for the exact threshold.
+	void MarkAllTrackedDccSurfacesForClear();
 
 	// Session-30 fix (astro_playroom_issues.md): a guest EliminateFastClear special draw
 	// (renderDraw.cpp's ConsumeMetadataColorOperation) is real evidence the color target at
@@ -113,6 +139,12 @@ private:
 		uint32_t clear_mask = 0;
 		uint32_t fill_value = 0xffffffffu;
 		uint64_t fill_size  = 0;
+		// Populated in PrepareDccClear from the bound image's own extent. Used only to scope
+		// MarkAllTrackedDccSurfacesForClear to genuine full-screen compositing targets -- see that
+		// function's comment for why an unconditional per-flip reset over every DCC surface is
+		// unsafe (session 36, continued: broke live gameplay -- missing/blinking effect buffers).
+		uint32_t width  = 0;
+		uint32_t height = 0;
 	};
 
 	struct OverlapResult {

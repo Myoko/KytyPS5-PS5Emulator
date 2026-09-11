@@ -1,10 +1,24 @@
 #include "common/assert.h"
+#include "common/emulatorConfig.h"
 #include "graphics/guest_gpu/gpu_defs.h"
 #include "graphics/shader/recompiler/backend/spirv/SpirvEmitter.h"
 #include "graphics/shader/recompiler/backend/spirv/spirvEmitterInternal.h"
 #include "graphics/shader/recompiler/ir/ShaderIR.h"
 
 namespace Libs::Graphics::ShaderRecompiler::Spirv::Emitter {
+
+// ASTRO's Playroom Bug A investigation (workflow/astro_playroom_issues.md, session 36): temporary,
+// hash-gated per-invocation export of {attr0.x, attr0.y, gl_VertexIndex} from the one VS under
+// study to the one PS it's confirmed paired with in this draw (DrawInputState log, this session:
+// vs=0x311f6fca037f2f53 ps=0x67008a703cf06422), read back via the existing --present-dump path.
+// Answers whether the corruption is in the fetched *index* or the fetched *data* for invocation 0
+// -- real guest memory and the real acquired buffer range are both already confirmed correct (this
+// session's BugAVertexBufferAcquire/DrawInputState logs), so this is the only remaining place left
+// to look. Location 31 is unused by both shaders' real GNM param exports (verified: this VS/PS
+// pair has exactly one real Parameter each, index 0). Remove once the mechanism is confirmed.
+constexpr uint64_t kBugADebugVertexShaderHash = 0x311f6fca037f2f53ull;
+constexpr uint64_t kBugADebugPixelShaderHash  = 0x67008a703cf06422ull;
+constexpr uint32_t kBugADebugParamIndex       = 31;
 
 uint32_t PixelParameterLocation(const EmitterState& state, uint32_t attr) {
 	std::array<uint32_t, 32> active_inputs {};
@@ -47,6 +61,19 @@ void CopyProgramInputsAndOutputs(EmitterState& state, const IR::Program& program
 			continue;
 		}
 		state.outputs.push_back({output.kind, output.index, output.location, 0, output.debug_name});
+	}
+	if (state.stage == ShaderType::Vertex && program.shader_hash == kBugADebugVertexShaderHash &&
+	    !HasOutput(state.outputs, IR::StageOutputKind::Parameter, kBugADebugParamIndex)) {
+		state.outputs.push_back({IR::StageOutputKind::Parameter, kBugADebugParamIndex,
+		                         kBugADebugParamIndex, 0, "BugADebugExport"});
+	}
+	if (state.stage == ShaderType::Pixel && program.shader_hash == kBugADebugPixelShaderHash &&
+	    std::ranges::none_of(state.inputs, [](const InputBinding& input) {
+		    return input.kind == IR::StageInputKind::Parameter &&
+		           input.location == kBugADebugParamIndex;
+	    })) {
+		state.inputs.push_back({IR::StageInputKind::Parameter, kBugADebugParamIndex, 4, 0,
+		                        "BugADebugImport", false});
 	}
 }
 

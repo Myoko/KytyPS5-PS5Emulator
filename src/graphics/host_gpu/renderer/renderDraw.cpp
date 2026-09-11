@@ -632,6 +632,26 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 			attachment.is_clear   = true;
 			attachment.clear_value = pending_clear.uint32;
 		}
+		// ASTRO's Playroom Bug B2 investigation (workflow/astro_playroom_issues.md, session 36):
+		// temporary, address-gated (the 5 known full-screen dialog-rotation targets), own rate
+		// limiter so it isn't starved by RenderColorTargetDecision's global 128-hit cap. Answers
+		// whether ANY bind of these targets ever gets is_clear=true (i.e. whether the loadOp is
+		// ever eClear for them at all) across a real run reaching the dialog.
+		switch (image.info.data.address) {
+			case 0x0505010000ull:
+			case 0x0506ff0000ull:
+			case 0x050d410000ull:
+			case 0x0519350000ull:
+			case 0x054e8a0000ull: {
+				static Log::RateLimit limiter {"BugB2ColorTargetBind", 256};
+				if (const auto hit = limiter.Hit()) {
+					LOGF("BugB2ColorTargetBind[%llu]: addr=0x%010" PRIx64 " is_clear=%s\n", *hit,
+					     image.info.data.address, attachment.is_clear ? "true" : "false");
+				}
+				break;
+			}
+			default: break;
+		}
 	}
 	// A stale depth target from an earlier, smaller pass must not shrink the render area for a
 	// larger colour pass. Astro Bot's title screen keeps a 1920x1080 depth attachment bound on
@@ -921,11 +941,22 @@ struct PreparedVertexBuffers {
 
 	std::array<vk::Buffer, MaxBuffers>     buffers {};
 	std::array<vk::DeviceSize, MaxBuffers> offsets {};
+	// Per-slot bound size, matching this slot's own real guest extent (num_records * stride),
+	// clamped to whatever was actually acquired. Passed to vkCmdBindVertexBuffers2's pSizes so
+	// Vulkan's robustness bound coincides with the real hardware NUM_RECORDS bound -- shadPS4,
+	// vkd3d-proton and dxvk all bind this way "for correctness" (see the plan). Without this the
+	// bound range was the whole underlying VkBuffer (a 64 MiB stream ring or a page-aligned slot
+	// buffer), leaving out-of-range fetch behavior implementation-defined instead of spec-pinned.
+	std::array<vk::DeviceSize, MaxBuffers> sizes {};
 	uint32_t                               count = 0;
 };
 
+// `needed_vertex_count` is the highest gl_VertexIndex + 1 this draw will actually invoke (0 means
+// unknown/not applicable, e.g. an indexed draw, where the real bound isn't a cheap function of
+// `draw.index_count` -- padding is skipped in that case, preserving prior behavior exactly).
 static PreparedVertexBuffers AcquireVertexBuffers(CommandBuffer&               buffer,
-                                                  const ShaderVertexInputInfo& vs_input_info) {
+                                                  const ShaderVertexInputInfo& vs_input_info,
+                                                  uint32_t needed_vertex_count) {
 	EXIT_IF(vs_input_info.buffers_num < 0 ||
 	        vs_input_info.buffers_num > ShaderVertexInputInfo::RES_MAX);
 
@@ -965,16 +996,35 @@ static PreparedVertexBuffers AcquireVertexBuffers(CommandBuffer&               b
 	}
 
 	auto& cache = buffer.GetContext().GetBufferCache();
+	// ASTRO's Playroom Bug A investigation (workflow/astro_playroom_issues.md session 36):
+	// hash-gated so this never fires outside the one shader under study. Answers whether the
+	// acquired range is short (ClampRangeSize truncation) or which ObtainBuffer path bound this
+	// draw's vertex data -- both are logically ruled out as Bug A's mechanism (see the plan), but
+	// this makes that verifiable with real numbers instead of resting on the argument alone.
+	const bool log_this_draw = vs_input_info.stage &&
+	                           vs_input_info.stage.program->shader_hash == 0x311f6fca037f2f53ull;
 	for (uint32_t i = 0; i < merged_count; i++) {
 		auto& range = merged_ranges[i];
 		// PPSA20298
-		const auto size =
-		    Libs::LibKernel::Memory::ClampRangeSize(range.base_address, range.RequestedSize());
+		const auto requested = range.RequestedSize();
+		const auto size = Libs::LibKernel::Memory::ClampRangeSize(range.base_address, requested);
 		range.acquired_end = range.base_address + size;
 		range.binding      = cache.ObtainBuffer(range.base_address, size, false);
 		SetVulkanObjectNameF(
 		    buffer.GetContext().GetGraphics().device, range.binding.first->Handle(),
 		    "Kyty.VertexBufferRange[guest=0x{:016x} size=0x{:x}]", range.base_address, size);
+		if (log_this_draw) {
+			static Log::RateLimit limiter {"BugAVertexBufferAcquire", 64};
+			if (const auto hit = limiter.Hit()) {
+				const auto is_stream =
+				    range.binding.first == &cache.GetUtilityBuffer(MemoryUsage::Stream);
+				LOGF("BugAVertexBufferAcquire[%llu]: base=0x%016" PRIx64 " requested=0x%" PRIx64
+				     " acquired=0x%" PRIx64 " clamped=%s path=%s binding_offset=0x%" PRIx64 "\n",
+				     *hit, range.base_address, requested, size,
+				     size != requested ? "true" : "false", is_stream ? "stream" : "slot",
+				     range.binding.second);
+			}
+		}
 	}
 
 	// Rebuild slot bindings, offsetting non-empty slots into their acquired merged range.
@@ -990,6 +1040,29 @@ static PreparedVertexBuffers AcquireVertexBuffers(CommandBuffer&               b
 			}
 			prepared.buffers[i] = null_buffer;
 			prepared.offsets[i] = 0;
+			prepared.sizes[i]   = 16; // NULL_BUFFER_ID's real allocated size (bufferCache.cpp).
+			continue;
+		}
+
+		// ASTRO's Playroom Bug A fix (workflow/astro_playroom_issues.md, session 36): a guest draw
+		// can legitimately need more sequential vertices than this slot's own NumRecords declares
+		// (confirmed live: a real title issues index_count=4 against a NumRecords=3 buffer). Real
+		// PS5/RDNA2 hardware clamps the out-of-range fetch to the last valid record -- confirmed
+		// this session via a live A/B force test (forcing the same clamp fixed a real, visible
+		// diagonal-split defect and let the composited logo render whole). Vulkan's
+		// robustBufferAccess2 zero-fills instead, which doesn't match and produces a visibly wrong
+		// extra primitive. Give the natural (unmodified-shader) fetch path the hardware-correct
+		// data instead.
+		if (needed_vertex_count > vertex.num_records && vertex.num_records != 0 &&
+		    vertex.stride != 0) {
+			auto [padded_buffer, padded_offset] = cache.ObtainPaddedVertexBuffer(
+			    vertex.addr, vertex.stride, vertex.num_records, needed_vertex_count);
+			prepared.buffers[i] = padded_buffer->Handle();
+			prepared.offsets[i] = padded_offset;
+			prepared.sizes[i]   = uint64_t {needed_vertex_count} * vertex.stride;
+			// Not named via SetVulkanObjectNameF: this is an offset into the shared staging ring
+			// buffer, not a dedicated per-slot allocation -- naming it would misleadingly rename
+			// that whole shared resource.
 			continue;
 		}
 
@@ -1005,6 +1078,9 @@ static PreparedVertexBuffers AcquireVertexBuffers(CommandBuffer&               b
 
 		prepared.buffers[i] = range->binding.first->Handle();
 		prepared.offsets[i] = range->binding.second + vertex.addr - range->base_address;
+		// Never claim more bytes are valid than were actually acquired (ClampRangeSize may have
+		// truncated the merged range short of this slot's own requested extent).
+		prepared.sizes[i] = std::min<uint64_t>(size, range->acquired_end - vertex.addr);
 		SetVulkanObjectNameF(
 		    buffer.GetContext().GetGraphics().device, prepared.buffers[i],
 		    "Kyty.VertexBuffer[slot={} guest=0x{:016x} size=0x{:x} stride={} records={}]", i,
@@ -1214,8 +1290,14 @@ static void CommitVertexBuffers(vk::CommandBuffer            vk_buffer,
 		EXIT_IF(prepared.buffers[i] == nullptr);
 	}
 	if (prepared.count != 0) {
-		vk_buffer.bindVertexBuffers(0, prepared.count, prepared.buffers.data(),
-		                            prepared.offsets.data());
+		// bindVertexBuffers2 (core Vulkan 1.3) with explicit per-slot pSizes instead of the
+		// no-sizes bindVertexBuffers: makes the robustness bound coincide with each slot's real
+		// guest extent (num_records * stride) instead of the whole underlying host VkBuffer.
+		// pStrides is left null -- vertex input binding stride is not dynamic state here (no
+		// VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE_EXT in the pipeline's dynamic state list),
+		// so the strides already baked into VkVertexInputBindingDescription apply.
+		vk_buffer.bindVertexBuffers2(0, prepared.count, prepared.buffers.data(),
+		                             prepared.offsets.data(), prepared.sizes.data(), nullptr);
 	}
 }
 
@@ -1340,16 +1422,64 @@ static void LogDrawStateIfNeeded(const CommandBuffer& buffer, const DrawCallInfo
 	// blanket gate on top, and tying them to it made it impossible to get per-draw target/input
 	// state without ALSO paying for the expensive firehose. Cost control is
 	// DrawLogFrameInWindow + the named limiters, same as every other diagnostic in this file.
-	if (!always_log && !force_legacy_rect_log) {
-		return;
-	}
-
 	const auto vs_hash = DrawVsShaderHash(state);
 	const auto ps_hash = DrawPsShaderHash(state);
+
+	// ASTRO's Playroom Bug A investigation (workflow/astro_playroom_issues.md session 36):
+	// DrawAuto (non-indexed draws) passes always_log=false, so this rich per-record vertex-byte
+	// dump never runs for the exact draw shape under study -- confirmed this session, not assumed.
+	// Force it through, hash-gated, without touching every other DrawAuto call's cost.
+	if (!always_log && !force_legacy_rect_log &&
+	    !Config::ShaderLogHashExplicitlyFiltered(vs_hash)) {
+		return;
+	}
 
 	if (state.ps_active) {
 		LogDrawTargetState(draw.name, state.color_info[0], state.depth_info, buffer,
 		                   state.ps_input_info, draw.index_count, 0, vs_hash, ps_hash);
+		// ASTRO's Playroom Bug B2 investigation (session 36, continued): dedicated, high-cap
+		// diagnostic for the full-screen alpha-tested (ps_kill) draw signature this session
+		// identified as the likely UI/dialog text path -- independent of DrawTargetState's shared,
+		// easily-exhausted rate limiter, so a full draw sequence across a real transition window
+		// is actually observable (the shared limiter was confirmed this session to exhaust within
+		// 1-3 guest frames when multiple render targets are active, making its samples useless for
+		// this specific trace). Temporary; remove once the mechanism is confirmed either way.
+		if (state.ps_active && state.color_info[0].image_id) {
+			const auto extent = state.color_info[0].Extent();
+			// Widened from ps_kill-only: a plain opaque "reset the backdrop" quad wouldn't use
+			// pixel-kill/alpha-test at all, and the ps_kill-only filter would have silently
+			// excluded exactly that draw from view. Catch every full-screen draw into these
+			// targets regardless.
+			if (extent.width == 3840 && extent.height == 2160) {
+				const auto& bc = buffer.GetRegisters().GetBlendControl(0);
+				const auto& dc = buffer.GetRegisters().GetDepthControl();
+				const auto& rt = buffer.GetRegisters().GetRenderTarget(0);
+				const auto  sampled_images =
+				    std::count_if(state.ps_input_info.stage.program->info.images.begin(),
+				                  state.ps_input_info.stage.program->info.images.end(),
+				                  [](const auto& image) {
+					                  return image.resource_class ==
+					                         ShaderRecompiler::IR::ImageResourceClass::Sampled;
+				                  });
+				static Log::RateLimit limiter {"BugB2FullScreenKillDraw", 16384};
+				if (const auto hit = limiter.Hit()) {
+					LOGF("BugB2FullScreenKillDraw[%llu]: frame=%d addr=0x%010" PRIx64
+					     " index_count=%u ps_kill=%s blend=%s src=%u dst=%u depth_test=%s"
+					     " depth_write=%s depth_func=%u sampled_tex=%zu dcc_enable=%s"
+					     " clear_word0=0x%08" PRIx32 " clear_word1=0x%08" PRIx32
+					     " prim=%u vs=0x%016" PRIx64 " ps=0x%016" PRIx64 "\n",
+					     *hit, buffer.GetContext().GetGpu().GetFrameNum(),
+					     state.color_info[0].desc.info.data.address, draw.index_count,
+					     state.ps_input_info.ps_pixel_kill_enable ? "true" : "false",
+					     bc.enable ? "true" : "false", bc.color_srcblend, bc.color_destblend,
+					     dc.z_enable ? "true" : "false", dc.z_write_enable ? "true" : "false",
+					     dc.zfunc, sampled_images, rt.info.dcc_compression_enable ? "true" : "false",
+					     rt.clear_word0.word0, rt.clear_word1.word1,
+					     static_cast<uint32_t>(buffer.GetUserConfig().GetPrimType()), vs_hash,
+					     ps_hash);
+				}
+			}
+		}
 	}
 	LogDrawInputState(buffer, state.color_info[0], state.vs_input_info, index_type_and_size,
 	                  draw.index_count, index_addr,
@@ -1464,7 +1594,13 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	PreparedIndexBuffer   index_binding;
 	if (!mesh_active) {
 		LogDrawPhase(draw.name, "PrepareVertexBuffers");
-		vertex_bindings = AcquireVertexBuffers(buffer, state.vs_input_info);
+		// Only computable cheaply for a non-indexed (sequential) draw, where gl_VertexIndex runs
+		// exactly [first_vertex, first_vertex + index_count). An indexed draw's real maximum index
+		// depends on the index buffer's content, not just its count -- pass 0 (skip padding,
+		// unchanged prior behavior) rather than guess.
+		const uint32_t needed_vertex_count =
+		    emit.indexed ? 0 : emit.first_vertex + draw.index_count;
+		vertex_bindings = AcquireVertexBuffers(buffer, state.vs_input_info, needed_vertex_count);
 		index_binding   = PrepareIndexBuffer(buffer, index_source);
 	}
 	auto rendering =

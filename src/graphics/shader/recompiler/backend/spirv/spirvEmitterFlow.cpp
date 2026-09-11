@@ -1,9 +1,174 @@
+#include "common/emulatorConfig.h"
 #include "graphics/shader/recompiler/backend/spirv/spirvEmitterInternal.h"
 
 #include <algorithm>
+#include <array>
+#include <bit>
+#include <optional>
 
 namespace Libs::Graphics::ShaderRecompiler::Spirv::Emitter {
 namespace {
+
+// ASTRO's Playroom Bug A investigation (workflow/astro_playroom_issues.md, session 36): see
+// spirvEmitterAnalysis.cpp for the full rationale. These must match that file's constants exactly.
+constexpr uint64_t kBugADebugVertexShaderHash = 0x311f6fca037f2f53ull;
+constexpr uint64_t kBugADebugPixelShaderHash  = 0x67008a703cf06422ull;
+constexpr uint32_t kBugADebugParamIndex       = 31;
+
+// ASTRO's Playroom Bug A investigation, continued (workflow/astro_playroom_issues.md, session 36
+// second half): this draw is `index_count=4` (a 2-triangle strip) over a vertex buffer whose real
+// V# sharp declares `NumRecords=3` -- gl_VertexIndex==3 (the 4th vertex, needed only for the
+// second triangle) is a genuine, guest-intended one-past-the-end fetch, not a KytyPS5 bug in the
+// bind/acquire path (already proven correct this session for records 0-2). This is a live A/B
+// FORCE experiment: override attr0.xy for exactly that one out-of-range invocation to each
+// candidate value in turn, rebuild, and compare the REAL (undebugged) rendered defect against
+// each. Bump kBugAForceVariant and rebuild to test the next candidate; 0 leaves current (real,
+// unforced) behavior untouched. Remove entirely once the mechanism is confirmed.
+enum class BugAForceVariant : int {
+	Off            = 0, // no override -- current real (robustBufferAccess2-governed) behavior
+	ForceZero      = 1, // (0,0,0,0) -- sanity check: does this match variant Off already?
+	ForceOneW      = 2, // (0,0,0,1) -- RDNA2's SEL_1-for-missing-W default, if hardware disagrees
+	                    // with Vulkan robustness2's all-zero rule for this bound format
+	ClampToRecord2 = 3, // (-1,3,0,1) -- as if index 3 clamped/wrapped to the last real record
+	ClampToRecord1 = 4, // (3,-1,0,1) -- as if index 3 clamped/wrapped to record 1
+	DegenerateAway = 5, // (1000,1000,0,1) -- pushes the 4th vertex far off-screen with a normal
+	                    // w=1 (no perspective-divide degeneracy); isolates whether the SECOND
+	                    // triangle's mere presence/position causes the diagonal, independent of
+	                    // whatever the real OOB fetch value is
+};
+constexpr BugAForceVariant kBugAForceVariant = BugAForceVariant::Off;
+// Independent of kBugAForceVariant: whether to show the debug-encoded colour readback (needs the
+// Flat-shaded provoking-vertex reasoning, see EmitBugADebugPixelOverride) or the real rendered
+// colour. Flip to true only when re-reading vertex data via the colour channel; leave false while
+// running an OOB force-variant A/B (need the real colour to judge the visual result).
+constexpr bool kBugAPixelDebugEnabled = false;
+
+uint32_t EmitBuiltinU32(ValueEmitContext& ctx, IR::StageInputKind kind, uint32_t component);
+
+constexpr uint32_t FloatBits(float value) {
+	return std::bit_cast<uint32_t>(value);
+}
+
+// Returns the forced bit pattern for vertex-index-3's attr0 component `chan` under the active
+// variant, or std::nullopt if this variant doesn't override that component.
+std::optional<uint32_t> BugAForceComponent(uint32_t chan) {
+	constexpr std::array<float, 4> zero_w0 {0.0f, 0.0f, 0.0f, 0.0f};
+	constexpr std::array<float, 4> zero_w1 {0.0f, 0.0f, 0.0f, 1.0f};
+	constexpr std::array<float, 4> record2 {-1.0f, 3.0f, 0.0f, 1.0f};
+	constexpr std::array<float, 4> record1 {3.0f, -1.0f, 0.0f, 1.0f};
+	constexpr std::array<float, 4> away {1000.0f, 1000.0f, 0.0f, 1.0f};
+	const std::array<float, 4>*    values = nullptr;
+	switch (kBugAForceVariant) {
+		case BugAForceVariant::Off: return std::nullopt;
+		case BugAForceVariant::ForceZero: values = &zero_w0; break;
+		case BugAForceVariant::ForceOneW: values = &zero_w1; break;
+		case BugAForceVariant::ClampToRecord2: values = &record2; break;
+		case BugAForceVariant::ClampToRecord1: values = &record1; break;
+		case BugAForceVariant::DegenerateAway: values = &away; break;
+	}
+	return FloatBits((*values)[chan & 3u]);
+}
+
+// Conditionally overrides `bits` (the real fetch result for attr0's component `chan`) with the
+// active variant's forced value, but only for the invocation whose gl_VertexIndex == 3 (the
+// genuine one-past-the-end fetch this draw's own vertex count creates). Every other invocation is
+// untouched. A no-op when kBugAForceVariant == Off.
+uint32_t EmitBugAForceOobVertex(ValueEmitContext& ctx, uint32_t chan, uint32_t bits) {
+	const auto forced_bits = BugAForceComponent(chan);
+	if (!forced_bits) {
+		return bits;
+	}
+	auto&      state     = ctx.state;
+	const auto index_raw = EmitBuiltinU32(ctx, IR::StageInputKind::VertexIndex, 0);
+	const auto is_oob     = state.builder.AllocateId();
+	state.builder.AddFunction(
+	    {OpIEqual, TypeBool(state), is_oob, index_raw, ConstantU32(state, 3u)});
+	const auto result = state.builder.AllocateId();
+	state.builder.AddFunction(
+	    {OpSelect, TypeU32(state), result, is_oob, ConstantU32(state, *forced_bits), bits});
+	return result;
+}
+
+uint32_t EmitBuiltinU32(ValueEmitContext& ctx, IR::StageInputKind kind, uint32_t component);
+
+// Locates the synthetic debug output/input's already-allocated variable id (added by
+// CopyProgramInputsAndOutputs, hash-gated). Returns 0 if this shader isn't the gated one.
+uint32_t BugADebugOutputVariable(const EmitterState& state) {
+	for (const auto& binding: state.outputs) {
+		if (binding.kind == IR::StageOutputKind::Parameter && binding.index == kBugADebugParamIndex) {
+			return binding.variable_id;
+		}
+	}
+	return 0;
+}
+
+uint32_t BugADebugInputVariable(const EmitterState& state) {
+	const auto* input = InputBindingForParameter(state, kBugADebugParamIndex);
+	return input != nullptr ? input->variable_id : 0;
+}
+
+// Emits {attr0.x, attr0.y, gl_VertexIndex, 0} into the synthetic debug output. Independent of the
+// (attr, chan) call that triggered it -- refetches x/y directly so partial-component call order
+// doesn't matter.
+void EmitBugADebugVertexExport(ValueEmitContext& ctx, const InputBinding& input) {
+	auto&      state    = ctx.state;
+	const auto variable = BugADebugOutputVariable(state);
+	if (variable == 0) {
+		return;
+	}
+	const auto x_bits = EmitVertexParameterComponentU32(state, input, 0);
+	const auto y_bits = EmitVertexParameterComponentU32(state, input, 1);
+	const auto x_f32  = state.builder.AllocateId();
+	state.builder.AddFunction({OpBitcast, TypeF32(state), x_f32, x_bits});
+	const auto y_f32 = state.builder.AllocateId();
+	state.builder.AddFunction({OpBitcast, TypeF32(state), y_f32, y_bits});
+	const auto index_bits = EmitBuiltinU32(ctx, IR::StageInputKind::VertexIndex, 0);
+	const auto index_f32  = state.builder.AllocateId();
+	state.builder.AddFunction({OpConvertUToF, TypeF32(state), index_f32, index_bits});
+	const auto vec = state.builder.AllocateId();
+	state.builder.AddFunction({OpCompositeConstruct, TypeF32Vector(state, 4), vec, x_f32, y_f32,
+	                           index_f32, ConstantF32Value(state, 0.0f)});
+	state.builder.AddFunction({OpStore, variable, vec});
+}
+
+// Overwrites the real MRT0 color with a debug-encoded readback of the paired VS's export:
+// R=(x+1)/4, G=(y+1)/4, B=index/2, A=1. Expected-correct corner values are exact 0.0/1.0; a
+// corrupted (0,0,0,1) fetch reads as R=G=0.25, distinguishable at 8-bit precision. Overwrites
+// AFTER the real store, so whichever control-flow path executes, this write is always last.
+void EmitBugADebugPixelOverride(ValueEmitContext& ctx, uint32_t mrt0_variable) {
+	auto&      state    = ctx.state;
+	const auto variable = BugADebugInputVariable(state);
+	if (variable == 0) {
+		return;
+	}
+	const auto imported = state.builder.AllocateId();
+	state.builder.AddFunction({OpLoad, TypeF32Vector(state, 4), imported, variable});
+	// R=(x+1)/4, G=(y+1)/4, B=index/2, A=1. Per-component (R/G and B use different scales), built
+	// via scalar extract+mul+add rather than a single vector op, since this project's SPIR-V
+	// opcode enum doesn't declare OpCompositeInsert/OpVectorTimesScalar.
+	const auto extract = [&](uint32_t component) {
+		const auto value = state.builder.AllocateId();
+		state.builder.AddFunction(
+		    {OpCompositeExtract, TypeF32(state), value, imported, component});
+		return value;
+	};
+	const auto scale_bias = [&](uint32_t component, float scale, float bias) {
+		const auto scaled = state.builder.AllocateId();
+		state.builder.AddFunction(
+		    {OpFMul, TypeF32(state), scaled, extract(component), ConstantF32Value(state, scale)});
+		const auto result = state.builder.AllocateId();
+		state.builder.AddFunction(
+		    {OpFAdd, TypeF32(state), result, scaled, ConstantF32Value(state, bias)});
+		return result;
+	};
+	const auto r = scale_bias(0, 0.25f, 0.25f);
+	const auto g = scale_bias(1, 0.25f, 0.25f);
+	const auto b = scale_bias(2, 0.5f, 0.0f);
+	const auto debug_color = state.builder.AllocateId();
+	state.builder.AddFunction({OpCompositeConstruct, TypeF32Vector(state, 4), debug_color, r, g, b,
+	                           ConstantF32Value(state, 1.0f)});
+	state.builder.AddFunction({OpStore, mrt0_variable, debug_color});
+}
 
 bool UserDataDwordIndex(const EmitterState& state, IR::ScalarReg reg, uint32_t& dword_index) {
 	const auto register_index = IR::RegIndex(reg);
@@ -202,7 +367,12 @@ uint32_t EmitAttribute(ValueEmitContext& ctx, uint32_t attr, uint32_t chan) {
 		return ConstantU32(state, 0);
 	}
 	if (state.stage == ShaderType::Vertex) {
-		return EmitVertexParameterComponentU32(state, *input, chan & 3u);
+		auto bits = EmitVertexParameterComponentU32(state, *input, chan & 3u);
+		if (attr == 0 && state.program.shader_hash == kBugADebugVertexShaderHash) {
+			EmitBugADebugVertexExport(ctx, *input);
+			bits = EmitBugAForceOobVertex(ctx, chan & 3u, bits);
+		}
+		return bits;
 	}
 	const auto load_per_vertex = [&](uint32_t vertex) {
 		const auto pointer = state.builder.AllocateId();
@@ -544,6 +714,13 @@ void EmitExport(ValueEmitContext& ctx, const IR::Inst& inst) {
 			state.builder.AddFunction({OpStore, pointer, value});
 		} else {
 			state.builder.AddFunction({OpStore, variable, value});
+			// Only override with the debug-color readback when NOT running a force-variant A/B
+			// test -- those need the real rendered color to judge whether the diagonal changed.
+			if (kBugAPixelDebugEnabled && state.stage == ShaderType::Pixel &&
+			    exp.kind == IR::ExportTargetKind::Mrt && exp.index == 0 &&
+			    state.program.shader_hash == kBugADebugPixelShaderHash) {
+				EmitBugADebugPixelOverride(ctx, variable);
+			}
 		}
 	});
 }

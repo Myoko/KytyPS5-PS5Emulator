@@ -322,7 +322,14 @@ void CreatePipelineInternal(
 		GetInputFormat(vs_input_info.resources[index], input_attr[index].format, attr_size,
 		               static_cast<uint32_t>(used_components));
 
-		if (graphics_debug_dump_enabled()) {
+		// ASTRO's Playroom Bug A investigation (workflow/astro_playroom_issues.md session 36):
+		// also fire hash-gated, independent of the graphics_debug_dump_enabled firehose, so the
+		// bound VkFormat / vertex_fetch_components can be checked for the one shader under study
+		// without paying for the full per-draw register dump. See the plan for why this matters:
+		// the answer decides whether robustBufferAccess2's spec-guaranteed OOB value ((0,0,0,0)
+		// for a fully 4-component bound format) is even consistent with what's observed.
+		if (graphics_debug_dump_enabled() ||
+		    Config::ShaderLogHashExplicitlyFiltered(vs_input_info.stage.program->shader_hash)) {
 			static Log::RateLimit limiter {"VertexInputState", 128};
 			if (const auto hit = limiter.Hit()) {
 				LOGF("VertexInputState[%llu]: attr=%u binding=%u offset=%u stride=%u fmt=%d "

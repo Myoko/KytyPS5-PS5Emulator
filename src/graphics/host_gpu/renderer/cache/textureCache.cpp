@@ -39,8 +39,11 @@ constexpr uint64_t NumFramesBeforeRemoval = 32;
 		return false;
 	}
 	const auto& metadata = desc.info.metadata;
-	if (code == 0x20) {
-		// Clear-to-register is a color-buffer operation; the texture pipe cannot decode it.
+	if (code == 0x10 || code == 0x20) {
+		// 0x10 (comp-to-single) and 0x20 (clear-to-register) both encode no colour in the fill
+		// byte itself -- the real clear colour lives in CB_COLOR_CLEAR_WORD0, already captured
+		// independently of which DCC code the hardware picked (colorRenderTarget.cpp, bind time).
+		// Both are color-buffer operations; the texture pipe cannot decode either.
 		return desc.type == TextureCache::BindingType::RenderTarget &&
 		       metadata.dcc_clear_register_valid &&
 		       DecodePackedColorClear(format, metadata.dcc_clear_word, clear);
@@ -1196,6 +1199,8 @@ void TextureCache::PrepareDccClear(ImageId id, const ImageDesc& desc) {
 	} else if (metadata.type != MetaDataInfo::Type::Dcc) {
 		EXIT("TextureCache: image reuses non-DCC metadata\n");
 	}
+	metadata.width  = image.info.extent.width;
+	metadata.height = image.info.extent.height;
 	if (metadata.clear_mask == 0 || image.info.resources.levels != 1 ||
 	    desc.info.metadata.range.size == 0 || metadata.fill_size < desc.info.metadata.range.size) {
 		// This is the ONLY place a tracked DCC fast-clear ever gets materialized into real
@@ -2018,6 +2023,50 @@ bool TextureCache::IsMetaCleared(uint64_t address, uint32_t slice, uint32_t* fil
 	return (found->second.clear_mask & (1u << slice)) != 0;
 }
 
+TextureCache::DebugMetaState TextureCache::DebugQueryMeta(uint64_t address, uint32_t* clear_mask) {
+	std::scoped_lock lock {m_lock};
+	const auto       found = m_surface_metas.find(address);
+	if (found == m_surface_metas.end()) {
+		return DebugMetaState::Untracked;
+	}
+	*clear_mask = found->second.clear_mask;
+	switch (found->second.type) {
+		case MetaDataInfo::Type::PendingDcc: return DebugMetaState::PendingDcc;
+		case MetaDataInfo::Type::CMask: return DebugMetaState::CMask;
+		case MetaDataInfo::Type::FMask: return DebugMetaState::FMask;
+		case MetaDataInfo::Type::HTile: return DebugMetaState::HTile;
+		case MetaDataInfo::Type::Dcc: return DebugMetaState::Dcc;
+	}
+	return DebugMetaState::Untracked;
+}
+
+void TextureCache::MarkAllTrackedDccSurfacesForClear() {
+	std::scoped_lock lock {m_lock};
+	for (auto& [address, metadata]: m_surface_metas) {
+		if (metadata.type != MetaDataInfo::Type::Dcc) {
+			continue;
+		}
+		// CORRECTED (session 36, continued): an unconditional per-flip reset over every DCC
+		// surface in the game broke real, live gameplay (missing/blinking effect buffers) --
+		// cross-emulator research found no comparable implementation proves that scope safe (the
+		// peer emulator this was ported from has never actually run this title). Scoped down to
+		// genuine full-screen compositing/UI targets only, using the same size threshold this
+		// investigation's own colorRenderTarget.cpp diagnostic already established for identifying
+		// them (width/height >= ~3000x1800) -- smaller render targets (bloom, motion blur history,
+		// reflection probes, and other multi-frame-persistent effect buffers) are left untouched.
+		if (metadata.width < 3000 || metadata.height < 1800) {
+			continue;
+		}
+		metadata.clear_mask = UINT32_MAX;
+		// 0x20 = clear-to-register: DecodeDccClear's existing branch for this code sources the
+		// real colour from metadata.dcc_clear_word (already populated from the guest's actual
+		// CB_COLOR_CLEAR_WORD0 at render-target bind time, colorRenderTarget.cpp), so this needs
+		// no real fill data of its own -- it only has to look like a valid, fully-covering fill.
+		metadata.fill_value = 0x20202020u;
+		metadata.fill_size  = UINT64_MAX;
+	}
+}
+
 bool TextureCache::ClearMeta(uint64_t address) {
 	std::scoped_lock lock {m_lock};
 	const auto       found = m_surface_metas.find(address);
@@ -2044,6 +2093,8 @@ void TextureCache::TrackDccFill(uint64_t address, uint64_t size, uint32_t fill_v
 		}
 		switch (code) {
 			case 0x00:
+			case 0x10: // Comp-to-single: valid on GFX10.3, the expected code for an
+			           // arbitrary-colour clear on a comp-to-single-capable surface.
 			case 0x20:
 			case 0x40:
 			case 0x80:

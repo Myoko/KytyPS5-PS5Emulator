@@ -105,6 +105,11 @@ bool ShaderLogHashAllowed(uint64_t hash) {
 	       std::find(allowed.begin(), allowed.end(), hash) != allowed.end();
 }
 
+bool ShaderLogHashExplicitlyFiltered(uint64_t hash) {
+	const auto& allowed = g_config->shader_log_filter_hashes;
+	return !allowed.empty() && std::find(allowed.begin(), allowed.end(), hash) != allowed.end();
+}
+
 bool ForceShaderDiskCacheEnabled() {
 	return g_config->force_shader_disk_cache_enabled;
 }

@@ -754,9 +754,18 @@ static vk::Device VulkanCreateDevice(vk::PhysicalDevice physical_device, const V
 	robustness2.pNext                              = &fragment_barycentric;
 #endif
 	if (robustness2_ext_enabled) {
-		robustness2.robustBufferAccess2 = supported_robustness2.robustBufferAccess2;
+		// robustBufferAccess2 and nullDescriptor are required, not opportunistically forwarded:
+		// they are what turns an out-of-range vertex fetch from an implementation-defined result
+		// into the one value the Vulkan spec pins (see the ASTRO's Playroom Bug A plan). Every
+		// real driver that ships VK_EXT_robustness2 at all supports both -- shadPS4, vkd3d-proton
+		// and dxvk all treat this the same way, requiring the extension outright. Fail loudly
+		// here rather than silently degrade if a driver somehow advertises the extension without
+		// them.
+		EXIT_IF(supported_robustness2.robustBufferAccess2 != VK_TRUE ||
+		       supported_robustness2.nullDescriptor != VK_TRUE);
+		robustness2.robustBufferAccess2 = VK_TRUE;
+		robustness2.nullDescriptor      = VK_TRUE;
 		robustness2.robustImageAccess2  = supported_robustness2.robustImageAccess2;
-		robustness2.nullDescriptor      = supported_robustness2.nullDescriptor;
 	}
 
 	const bool subgroup_size_control_enabled =
@@ -774,7 +783,15 @@ static vk::Device VulkanCreateDevice(vk::PhysicalDevice physical_device, const V
 	features13.robustImageAccess   = supported_features13.robustImageAccess;
 	features13.subgroupSizeControl = subgroup_size_control_enabled ? VK_TRUE : VK_FALSE;
 
-	LOGF("Vulkan robustness: robustImageAccess=%s robustImageAccess2=%s\n",
+	// robustBufferAccess vs. robustBufferAccess2 changes what an out-of-range vertex fetch is
+	// even allowed to return (implementation-defined under the former, spec-pinned under the
+	// latter) -- ASTRO's Playroom Bug A investigation needs to know which one this run actually
+	// negotiated, not just that robustBufferAccess is unconditionally requested.
+	LOGF("Vulkan robustness: robustBufferAccess=%s robustBufferAccess2=%s nullDescriptor=%s "
+	     "robustImageAccess=%s robustImageAccess2=%s\n",
+	     device_features.robustBufferAccess == VK_TRUE ? "true" : "false",
+	     robustness2_ext_enabled && robustness2.robustBufferAccess2 == VK_TRUE ? "true" : "false",
+	     robustness2_ext_enabled && robustness2.nullDescriptor == VK_TRUE ? "true" : "false",
 	     features13.robustImageAccess == VK_TRUE ? "true" : "false",
 	     robustness2_ext_enabled && robustness2.robustImageAccess2 == VK_TRUE ? "true" : "false");
 

@@ -402,6 +402,20 @@ BufferId BufferCache::CreateBuffer(uint64_t vaddr, uint64_t size) {
 	vaddr &= ~(CACHING_PAGESIZE - 1);
 	size               = end - vaddr;
 	const auto overlap = ResolveOverlaps(vaddr, size);
+	// ASTRO's Playroom Bug A investigation (workflow/astro_playroom_issues.md, session 36):
+	// temporary, address-gated. Checking whether a buffer merge (JoinOverlap) ever touches this
+	// exact vertex buffer's address, which would move a previously-correct upload via a GPU-side
+	// CopyFrom that could itself be the actual corruption site. Remove once confirmed either way.
+	constexpr uint64_t kBugAVertexBufferAddress = 0x505006000ull;
+	if (vaddr <= kBugAVertexBufferAddress && vaddr + size > kBugAVertexBufferAddress) {
+		static Log::RateLimit limiter {"BugACreateBuffer", 32};
+		if (const auto hit = limiter.Hit()) {
+			LOGF("BugACreateBuffer[%llu]: new=[0x%016" PRIx64 ",0x%016" PRIx64
+			     ") overlap_count=%td overlap=[0x%016" PRIx64 ",0x%016" PRIx64 ") has_stream_leap=%s\n",
+			     *hit, vaddr, vaddr + size, std::distance(overlap.first, overlap.last),
+			     overlap.begin, overlap.end, overlap.has_stream_leap ? "true" : "false");
+		}
+	}
 
 	const auto id = m_slot_buffers.insert(
 	    m_graphics, m_scheduler, MemoryUsage::DeviceLocal, overlap.begin,
@@ -423,13 +437,42 @@ bool BufferCache::SynchronizeBuffer(Buffer& buffer, uint64_t vaddr, uint64_t siz
 	std::vector<vk::BufferCopy> copies;
 	uint64_t                    total_size = 0;
 	vk::Buffer                  source;
+	// ASTRO's Playroom Bug A investigation (workflow/astro_playroom_issues.md, session 36):
+	// temporary, address-gated diagnostic. This session's SPIR-V debug-export experiment showed
+	// the real GPU-side vertex fetch reads (0,0) for this buffer's first 16 bytes even though CPU-
+	// visible guest memory is confirmed correct there -- this traces whether an upload range ever
+	// actually covers that first sub-range, or whether it's silently skipped/short. Remove once
+	// the mechanism is confirmed.
+	// Widened to the whole 16KB caching block (not just the exact 72-byte vertex range) so a
+	// request that rounds into the same tracker page from a slightly different byte address is
+	// still caught.
+	constexpr uint64_t kBugAVertexBufferRangeBegin = 0x505004000ull;
+	constexpr uint64_t kBugAVertexBufferRangeEnd   = 0x505008000ull;
+	const bool         log_this_buffer =
+	    vaddr < kBugAVertexBufferRangeEnd && vaddr + size > kBugAVertexBufferRangeBegin;
 	m_memory_tracker.ForEachUploadRange(
 	    vaddr, size, is_written,
 	    [&](uint64_t address, uint64_t bytes) noexcept {
+		    if (log_this_buffer) {
+			    static Log::RateLimit limiter {"BugAUploadRange", 64};
+			    if (const auto hit = limiter.Hit()) {
+				    LOGF("BugAUploadRange[%llu]: request=[0x%016" PRIx64 ",0x%016" PRIx64
+				         ") upload=[0x%016" PRIx64 ",0x%016" PRIx64 ")\n",
+				         *hit, vaddr, vaddr + size, address, address + bytes);
+			    }
+		    }
 		    copies.emplace_back(total_size, buffer.Offset(address), bytes);
 		    total_size += bytes;
 	    },
 	    [&]() noexcept { source = UploadCopies(buffer, copies, total_size); });
+	if (log_this_buffer && !source) {
+		static Log::RateLimit limiter {"BugAUploadRangeSkipped", 64};
+		if (const auto hit = limiter.Hit()) {
+			LOGF("BugAUploadRangeSkipped[%llu]: request=[0x%016" PRIx64 ",0x%016" PRIx64
+			     ") -- no upload range reported, tracker believes this is already clean\n",
+			     *hit, vaddr, vaddr + size);
+		}
+	}
 	if (source) {
 		auto& command = m_scheduler.Current();
 		command.EndRendering();
@@ -551,6 +594,26 @@ std::pair<Buffer*, uint64_t> BufferCache::ObtainBufferForImage(uint64_t vaddr, u
 	return {&m_staging_buffer, stage_offset};
 }
 
+std::pair<Buffer*, uint64_t> BufferCache::ObtainPaddedVertexBuffer(uint64_t vaddr, uint32_t stride,
+                                                                    uint32_t real_records,
+                                                                    uint32_t needed_records) {
+	EXIT_IF(stride == 0 || real_records == 0 || needed_records <= real_records);
+	const uint64_t real_size   = uint64_t {real_records} * stride;
+	const uint64_t needed_size = uint64_t {needed_records} * stride;
+	auto [staging, stage_offset] = m_staging_buffer.Map(needed_size, 16);
+	if (staging == nullptr ||
+	    (!Libs::LibKernel::Memory::TryReadBacking(vaddr, staging, real_size) &&
+	     !Libs::LibKernel::Memory::TryReadPrtBacking(vaddr, staging, real_size))) {
+		EXIT("BufferCache: failed to read guest vertex data for OOB-record padding\n");
+	}
+	const auto* last_record = staging + uint64_t {real_records - 1} * stride;
+	for (uint32_t record = real_records; record < needed_records; record++) {
+		std::memcpy(staging + uint64_t {record} * stride, last_record, stride);
+	}
+	m_staging_buffer.Commit();
+	return {&m_staging_buffer, stage_offset};
+}
+
 void BufferCache::FillBuffer(uint64_t vaddr, uint64_t size, uint32_t value, bool is_gds) {
 	if ((vaddr & 3u) != 0 || size == 0 || (size & 3u) != 0 || size > UINT64_MAX - vaddr) {
 		EXIT("BufferCache: fill range must be dword aligned\n");
@@ -565,7 +628,16 @@ void BufferCache::FillBuffer(uint64_t vaddr, uint64_t size, uint32_t value, bool
 	if (vaddr == 0) {
 		EXIT("BufferCache: invalid fill memory address\n");
 	}
+	// ASTRO's Playroom Bug B2 (workflow/astro_playroom_issues.md session 30-36): a CP-DMA
+	// constant fill (this path, PM4 DMA_DATA src_sel==2) is real hardware's primary way to arm a
+	// DCC fast clear (shadPS4 buffer_cache.cpp: unconditional ClearMeta on any CP-DMA fill of a
+	// tracked address; RADV/PAL both also reach DCC metadata this way for small ranges). ClearMeta
+	// alone is a guaranteed no-op for Dcc/PendingDcc-tracked addresses -- TrackDccFill is the
+	// validated path that actually arms a real clear code. Route through both: ClearMeta still
+	// handles CMask/FMask/HTile exactly as before, TrackDccFill now gets a chance at DCC targets
+	// this call site previously could never reach at all.
 	(void)m_texture_cache.ClearMeta(vaddr);
+	m_texture_cache.TrackDccFill(vaddr, size, value);
 	if (!IsRegionGpuModified(vaddr, size)) {
 		// Access the guest mapping so write faults invalidate cached buffers and images.
 		auto* destination = reinterpret_cast<uint32_t*>(vaddr);

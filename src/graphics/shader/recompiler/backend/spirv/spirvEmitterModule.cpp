@@ -505,7 +505,14 @@ void AddInputAnnotationsAndNames(EmitterState& state) {
 			state.builder.AddAnnotation({OpDecorate, input.variable_id, DecorationFlat});
 		}
 		if (input.kind == IR::StageInputKind::Parameter) {
-			const auto flat = PixelParameterIsFlat(state, input.location);
+			// ASTRO's Playroom Bug A investigation (workflow/astro_playroom_issues.md, session
+			// 36): force Flat on the synthetic debug import (location 31, see
+			// spirvEmitterAnalysis.cpp) so its value is read from ONE provoking vertex across the
+			// whole primitive -- eliminates the barycentric-sampling-location ambiguity that made
+			// a screen-space pixel-pick unreliable. Temporary; remove with the rest of the hook.
+			constexpr uint32_t kBugADebugParamIndex   = 31;
+			const bool         is_bug_a_debug_import  = input.location == kBugADebugParamIndex;
+			const auto         flat = is_bug_a_debug_import || PixelParameterIsFlat(state, input.location);
 			if (input.per_vertex) {
 				state.builder.AddAnnotation(
 				    {OpDecorate, input.variable_id, DecorationPerVertexKHR});
@@ -519,7 +526,8 @@ void AddInputAnnotationsAndNames(EmitterState& state) {
 			// attribute's interpolation was never observed through that path (e.g. read some
 			// other way). PsBarycentricMode order: PerspSample, PerspCenter, PerspCentroid,
 			// LinearSample, LinearCenter, LinearCentroid (shader.h).
-			if (state.stage == ShaderType::Pixel && !flat && !input.per_vertex) {
+			if (state.stage == ShaderType::Pixel && !flat && !input.per_vertex &&
+			    !is_bug_a_debug_import) {
 				const auto mode = input.location < 32u
 				                      ? state.program.info.ps_param_interp_mode[input.location]
 				                      : UINT8_MAX;
