@@ -15,6 +15,9 @@ mod savedata;
 mod scanner;
 mod trophy;
 
+#[cfg(target_os = "linux")]
+mod webkit_tuning;
+
 use compatibility::CompatibilityMap;
 use config::{Configuration, KytyConfig};
 use std::collections::HashMap;
@@ -568,6 +571,8 @@ pub fn run() {
             let icon = tauri::image::Image::from_bytes(include_bytes!("../icons/128x128.png"))?;
             if let Some(window) = app.get_webview_window("main") {
                 window.set_icon(icon)?;
+                #[cfg(target_os = "linux")]
+                webkit_tuning::apply(&window);
             }
             // Dedicated always-on gamepad-to-navigation-intent thread (see
             // gamepad.rs's module doc) -- separate from AppState.gilrs,
