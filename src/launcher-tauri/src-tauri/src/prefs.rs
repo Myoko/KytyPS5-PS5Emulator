@@ -18,23 +18,36 @@ impl Default for LaunchMode {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LauncherPrefs {
     #[serde(default)]
     pub emulator_path_override: Option<String>,
     #[serde(default)]
     pub launch_mode: LaunchMode,
-    /// Emulator Settings toggle, default off: exits the launcher's own
-    /// GUI process the moment a game starts (in-app launch mode only) and
-    /// hands the emulator to a detached supervisor (see `supervisor.rs`)
-    /// that relaunches the launcher once the game closes. Off by default
-    /// because it changes what a user expects from "closing" a game --
-    /// getting the launcher back instead of a dead desktop -- and because
-    /// it only helps on machines where the launcher's own memory/CPU use
-    /// actually competes with the emulator for the same GPU/RAM.
-    #[serde(default)]
+    /// Emulator Settings toggle, default on: exits the launcher's own GUI
+    /// process the moment a game starts (in-app launch mode only) and hands
+    /// the emulator to a detached supervisor (see `supervisor.rs`) that
+    /// relaunches the launcher once the game closes. On by default because
+    /// it reclaims the launcher's own memory/CPU for the game while it's
+    /// running, and the launcher still comes back on its own once the game
+    /// exits. A user who turns it off keeps that choice on future launches.
+    #[serde(default = "default_true")]
     pub auto_close_on_launch: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for LauncherPrefs {
+    fn default() -> Self {
+        LauncherPrefs {
+            emulator_path_override: None,
+            launch_mode: LaunchMode::default(),
+            auto_close_on_launch: true,
+        }
+    }
 }
 
 const FILE_NAME: &str = "prefs.json";
@@ -92,9 +105,15 @@ mod tests {
     }
 
     #[test]
-    fn auto_close_on_launch_defaults_to_off() {
+    fn auto_close_on_launch_defaults_to_on() {
         let dir = tempfile::tempdir().unwrap();
         let prefs = load(dir.path());
-        assert_eq!(prefs.auto_close_on_launch, false);
+        assert_eq!(prefs.auto_close_on_launch, true);
+    }
+
+    #[test]
+    fn auto_close_on_launch_defaults_to_on_when_key_missing_from_json() {
+        let prefs: LauncherPrefs = serde_json::from_str("{}").unwrap();
+        assert_eq!(prefs.auto_close_on_launch, true);
     }
 }

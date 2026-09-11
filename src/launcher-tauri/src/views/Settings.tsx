@@ -600,7 +600,7 @@ function DefaultsCategory() {
           />
         </div>
       )}
-      {prefs && <p className={styles.blockHint}>{t("settings.launch.autoCloseHint")}</p>}
+      {prefs && <p className={styles.autoCloseHint}>{t("settings.launch.autoCloseHint")}</p>}
 
       <ConfigForm value={cfg.global} onChange={(next) => configStore.set({ ...cfg, global: next })} />
       <div className={styles.actionRow}>

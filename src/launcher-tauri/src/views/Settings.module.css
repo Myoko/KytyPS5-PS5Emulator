@@ -192,6 +192,13 @@
   composes: blockHint from "../styles/settingsForm.module.css";
 }
 
+/* The auto-close hint closes out the launch-mode group, so it needs more
+   air under it than a hint that introduces the block below. */
+.autoCloseHint {
+  composes: blockHint from "../styles/settingsForm.module.css";
+  margin-bottom: 10px;
+}
+
 .subheading {
   composes: subheading from "../styles/settingsForm.module.css";
 }
