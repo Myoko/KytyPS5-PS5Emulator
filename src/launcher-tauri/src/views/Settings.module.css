@@ -148,6 +148,16 @@
   gap: 14px;
 }
 
+/* 10px less top padding than the shared .row (closing the gap under the
+   launch-mode row above it) and 15px less bottom padding, so the hint right
+   below ("Frees the launcher's...") reads as attached to this row instead
+   of floating between it and the next block. */
+.autoCloseRow {
+  composes: row;
+  padding-top: 0;
+  padding-bottom: 5px;
+}
+
 /* One consistent gap above a follow-up action that sits below a category's
    rows or list (add a folder, scan for devices, save changes) -- replaces
    each category inventing its own margin-top (8px/16px/20px) for what is
@@ -196,7 +206,7 @@
    air under it than a hint that introduces the block below. */
 .autoCloseHint {
   composes: blockHint from "../styles/settingsForm.module.css";
-  margin-bottom: 10px;
+  margin-bottom: 20px;
 }
 
 .subheading {

@@ -591,7 +591,7 @@ function DefaultsCategory() {
       )}
 
       {prefs && (
-        <div className={styles.row}>
+        <div className={styles.autoCloseRow}>
           <span className={styles.rowLabel}>{t("settings.launch.autoClose")}</span>
           <Toggle
             ariaLabel={t("settings.launch.autoClose")}
