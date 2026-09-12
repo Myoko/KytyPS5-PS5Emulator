@@ -1603,30 +1603,29 @@ std::vector<u32> MakePassthroughVertexSpirv(bool layered, float clip_w = 1.0f) {
 
   Builder b;
   const auto void_type = b.Type(spv::OpTypeVoid);
-  const auto uint_type = b.Type(spv::OpTypeInt, {32, 0});
-  const auto int_type = b.Type(spv::OpTypeInt, {32, 1});
-  const auto float_type = b.Type(spv::OpTypeFloat, {32});
-  const auto vec2_type = b.Type(spv::OpTypeVector, {float_type, 2});
-  const auto vec4_type = b.Type(spv::OpTypeVector, {float_type, 4});
+  const auto uint_type = b.Type(spv::OpTypeInt, 32, 0);
+  const auto int_type = b.Type(spv::OpTypeInt, 32, 1);
+  const auto float_type = b.Type(spv::OpTypeFloat, 32);
+  const auto vec2_type = b.Type(spv::OpTypeVector, float_type, 2);
+  const auto vec4_type = b.Type(spv::OpTypeVector, float_type, 4);
   const auto per_vertex_type =
-      b.DecoratedType(spv::OpTypeStruct, {vec4_type},
-                      {{spv::OpDecorate, {spv::DecorationBlock}},
+      b.DecoratedType(spv::OpTypeStruct, {{spv::OpDecorate, {spv::DecorationBlock}},
                        {spv::OpMemberDecorate,
-                        {0, spv::DecorationBuiltIn, spv::BuiltInPosition}}});
+                        {0, spv::DecorationBuiltIn, spv::BuiltInPosition}}}, vec4_type);
   const auto ptr_input_vec2 =
-      b.Type(spv::OpTypePointer, {spv::StorageClassInput, vec2_type});
+      b.Type(spv::OpTypePointer, spv::StorageClassInput, vec2_type);
   const auto ptr_input_vec4 =
-      b.Type(spv::OpTypePointer, {spv::StorageClassInput, vec4_type});
+      b.Type(spv::OpTypePointer, spv::StorageClassInput, vec4_type);
   const auto ptr_output_vec4 =
-      b.Type(spv::OpTypePointer, {spv::StorageClassOutput, vec4_type});
+      b.Type(spv::OpTypePointer, spv::StorageClassOutput, vec4_type);
   const auto ptr_output_per_vertex =
-      b.Type(spv::OpTypePointer, {spv::StorageClassOutput, per_vertex_type});
-  const auto func_type = b.Type(spv::OpTypeFunction, {void_type});
-  const auto const_u32_0 = b.Constant(spv::OpConstant, uint_type, {0});
+      b.Type(spv::OpTypePointer, spv::StorageClassOutput, per_vertex_type);
+  const auto func_type = b.Type(spv::OpTypeFunction, void_type);
+  const auto const_u32_0 = b.Constant(spv::OpConstant, uint_type, 0);
   const auto const_f32_0 =
-      b.Constant(spv::OpConstant, float_type, {0x00000000u});
+      b.Constant(spv::OpConstant, float_type, 0x00000000u);
   const auto const_f32_w =
-      b.Constant(spv::OpConstant, float_type, {std::bit_cast<u32>(clip_w)});
+      b.Constant(spv::OpConstant, float_type, std::bit_cast<u32>(clip_w));
   const auto in_pos =
       b.DefineGlobalVariable(ptr_input_vec2, spv::StorageClassInput);
   const auto in_color =
@@ -1640,15 +1639,14 @@ std::vector<u32> MakePassthroughVertexSpirv(bool layered, float clip_w = 1.0f) {
   std::vector<u32> interfaces = {in_pos, in_color, per_vertex, out_color};
   if (layered) {
     instance = b.DefineGlobalVariable(
-        b.Type(spv::OpTypePointer, {spv::StorageClassInput, int_type}),
+        b.Type(spv::OpTypePointer, spv::StorageClassInput, int_type),
         spv::StorageClassInput);
     layer = b.DefineGlobalVariable(
-        b.Type(spv::OpTypePointer, {spv::StorageClassOutput, int_type}),
+        b.Type(spv::OpTypePointer, spv::StorageClassOutput, int_type),
         spv::StorageClassOutput);
-    b.AddAnnotation({spv::OpDecorate, instance, spv::DecorationBuiltIn,
-                     spv::BuiltInInstanceIndex});
-    b.AddAnnotation(
-        {spv::OpDecorate, layer, spv::DecorationBuiltIn, spv::BuiltInLayer});
+    b.AddAnnotation(spv::OpDecorate, instance, spv::DecorationBuiltIn,
+                     spv::BuiltInInstanceIndex);
+    b.AddAnnotation(spv::OpDecorate, layer, spv::DecorationBuiltIn, spv::BuiltInLayer);
     b.RequireVersion(0x00010500u);
     b.RequireCapability(spv::CapabilityShaderLayer);
     interfaces.insert(interfaces.end(), {instance, layer});
@@ -1663,32 +1661,32 @@ std::vector<u32> MakePassthroughVertexSpirv(bool layered, float clip_w = 1.0f) {
   const auto position_ptr = b.AllocateId();
 
   b.RequireCapability(spv::CapabilityShader);
-  b.AddMemoryModel({spv::AddressingModelLogical, spv::MemoryModelGLSL450});
+  b.AddMemoryModel(spv::AddressingModelLogical, spv::MemoryModelGLSL450);
   b.AddEntryPoint(spv::ExecutionModelVertex, main, "main", interfaces);
-  b.AddAnnotation({spv::OpDecorate, in_pos, spv::DecorationLocation, 0});
-  b.AddAnnotation({spv::OpDecorate, in_color, spv::DecorationLocation, 1});
-  b.AddAnnotation({spv::OpDecorate, out_color, spv::DecorationLocation, 0});
+  b.AddAnnotation(spv::OpDecorate, in_pos, spv::DecorationLocation, 0);
+  b.AddAnnotation(spv::OpDecorate, in_color, spv::DecorationLocation, 1);
+  b.AddAnnotation(spv::OpDecorate, out_color, spv::DecorationLocation, 0);
 
-  b.AddFunction({spv::OpFunction, void_type, main, spv::FunctionControlMaskNone,
-                 func_type});
-  b.AddFunction({spv::OpLabel, label});
-  b.AddFunction({spv::OpLoad, vec2_type, pos2, in_pos});
-  b.AddFunction({spv::OpLoad, vec4_type, color4, in_color});
-  b.AddFunction({spv::OpCompositeExtract, float_type, pos_x, pos2, 0});
-  b.AddFunction({spv::OpCompositeExtract, float_type, pos_y, pos2, 1});
-  b.AddFunction({spv::OpCompositeConstruct, vec4_type, position, pos_x, pos_y,
-                 const_f32_0, const_f32_w});
-  b.AddFunction({spv::OpAccessChain, ptr_output_vec4, position_ptr, per_vertex,
-                 const_u32_0});
-  b.AddFunction({spv::OpStore, position_ptr, position});
-  b.AddFunction({spv::OpStore, out_color, color4});
+  b.AddFunction(spv::OpFunction, void_type, main, spv::FunctionControlMaskNone,
+                 func_type);
+  b.AddFunction(spv::OpLabel, label);
+  b.AddFunction(spv::OpLoad, vec2_type, pos2, in_pos);
+  b.AddFunction(spv::OpLoad, vec4_type, color4, in_color);
+  b.AddFunction(spv::OpCompositeExtract, float_type, pos_x, pos2, 0);
+  b.AddFunction(spv::OpCompositeExtract, float_type, pos_y, pos2, 1);
+  b.AddFunction(spv::OpCompositeConstruct, vec4_type, position, pos_x, pos_y,
+                 const_f32_0, const_f32_w);
+  b.AddFunction(spv::OpAccessChain, ptr_output_vec4, position_ptr, per_vertex,
+                 const_u32_0);
+  b.AddFunction(spv::OpStore, position_ptr, position);
+  b.AddFunction(spv::OpStore, out_color, color4);
   if (layered) {
     const auto index = b.AllocateId();
-    b.AddFunction({spv::OpLoad, int_type, index, instance});
-    b.AddFunction({spv::OpStore, layer, index});
+    b.AddFunction(spv::OpLoad, int_type, index, instance);
+    b.AddFunction(spv::OpStore, layer, index);
   }
-  b.AddFunction({spv::OpReturn});
-  b.AddFunction({spv::OpFunctionEnd});
+  b.AddFunction(spv::OpReturn);
+  b.AddFunction(spv::OpFunctionEnd);
   return b.Build();
 }
 
@@ -17837,6 +17835,91 @@ TestCase VectorSpecialF16Ops() {
            O::BUFFER_STORE_DWORD, O::S_ENDPGM}};
 }
 
+TestCase VectorFractF16CapturedAndEdges() {
+  using O = ShaderOpcode;
+
+  // RDNA2 section 12.8: x - floor(x), rounded to half precision.
+  // Load at runtime to exercise the emitted operation, including half subnormals.
+  const std::array<u32, 18> inputs{
+      0x3d00u, 0xbd00u, 0x0000u, 0x8000u, 0x0001u, 0x8001u,
+      0x03ffu, 0x83ffu, 0x7bffu, 0xfbffu, 0x3800u, 0xb800u,
+      0x8c00u, 0x8c01u, 0x7c00u, 0xfc00u, 0x7e55u, 0x7d01u};
+  const std::array<u32, 18> fractions{
+      0x3400u, 0x3a00u, 0x0000u, 0x0000u, 0x0001u, 0x3c00u,
+      0x03ffu, 0x3c00u, 0x0000u, 0x0000u, 0x3800u, 0x3800u,
+      0x3c00u, 0x3bffu, 0x7e00u, 0x7e00u, 0x7e00u, 0x7e00u};
+  TestCase test;
+  test.name = "VectorFractF16CapturedAndEdges";
+  for (u32 bits : inputs) {
+    test.initial.push_back(0x42000000u | bits); // Distinct high half must be ignored.
+  }
+  test.expected = test.initial;
+  auto &code = test.code;
+  for (u32 i = 0; i < inputs.size(); i++) {
+    AppendVMovU32(&code, 30, i * 4u);
+    AppendBufferLoadDword(&code, 7, 30);
+    AppendVMovLiteral(&code, 9, 0xa5a51234u);
+    code.push_back(0x7e12bf07u); // Captured v_fract_f16 v9, v7.
+    if (i >= 14u) {
+      // Check quiet NaN class without constraining its sign or payload.
+      code.push_back(EncodeVop2(0x1b, 9, 255u, 9));
+      code.push_back(0xffff7e00u);
+    }
+    AppendStoreVgpr(&code, 9, static_cast<u32>(inputs.size()) + i);
+    test.expected.push_back(0xa5a50000u | fractions[i]);
+  }
+  AppendEnd(&code);
+  test.opcodes = {O::V_MOV_B32, O::BUFFER_LOAD_DWORD, O::V_FRACT_F16,
+                  O::V_AND_B32, O::BUFFER_STORE_DWORD, O::S_ENDPGM};
+  test.decoded_counts = {{"V_FRACT_F16 v9, v7", inputs.size()}};
+  test.ir_counts = {{" = FPFract32 ", inputs.size()}};
+  test.required_spirv = {" Fract ", " PackHalf2x16 ", " UnpackHalf2x16 "};
+  test.forbidden_spirv = {"OpCapability Float16"};
+  return test;
+}
+
+TestCase VectorFractF16Modifiers() {
+  using O = ShaderOpcode;
+
+  std::vector<u32> code;
+  AppendVMovLiteral(&code, 7, 0xbd003d00u); // high=-1.25h, low=+1.25h
+  for (u32 dst = 10; dst <= 19; dst++) {
+    AppendVMovLiteral(&code, dst, 0xabcd1234u);
+  }
+  code.push_back(EncodeVop1(0x5f, 10, 249));
+  code.push_back(EncodeVop1Sdwa(7, 5, 2, 5)); // high -> high, preserve low
+  code.push_back(EncodeVop1(0x5f, 11, 249));
+  code.push_back(EncodeVop1Sdwa(7, 4, 0, 5, 0, 1, 1)); // -abs(-1.25), pad high
+  code.push_back(EncodeVop1(0x5f, 12, 249));
+  code.push_back(EncodeVop1Sdwa(7, 4, 2, 5, 0, 0, 1)); // abs(-1.25)
+  code.push_back(EncodeVop1(0x5f, 13, 249));
+  code.push_back(EncodeVop1Sdwa(7, 4, 2, 5, 0, 0, 0, 0, 1, 1)); // *2, clamp
+  code.push_back(EncodeVop1(0x5f, 14, 250));
+  code.push_back(EncodeVop1Dpp(7, 0x0e4) | (1u << 20u)); // DPP identity, negate
+  AppendVop3(&code, 0x1df, 15, Vgpr(7), 0, 0, 1, 0, true, 1, 1);
+  code.push_back(EncodeVop1(0x5f, 16, 255));
+  code.push_back(0x4200bd00u); // literal -1.25h
+  code.push_back(EncodeVop1(0x5f, 17, 240)); // inline +0.5, interpreted as FP16
+  AppendSMovLiteral(&code, 20, 0x4200bd00u);
+  code.push_back(EncodeVop1(0x5f, 18, 20)); // SGPR source
+  AppendVop3(&code, 0x1df, 19, Vgpr(7), 0, 0, 0, 0, false, 3); // *0.5
+  for (u32 i = 0; i < 10; i++) {
+    AppendStoreVgpr(&code, 10 + i, i);
+  }
+  AppendEnd(&code);
+
+  TestCase test{"VectorFractF16Modifiers", code, {},
+                {0x3a001234u, 0x00003a00u, 0xabcd3400u, 0xabcd3c00u,
+                 0xabcd3a00u, 0xabcd3c00u, 0xabcd3a00u, 0xabcd3800u,
+                 0xabcd3a00u, 0xabcd3000u},
+                {O::V_MOV_B32, O::S_MOV_B32, O::V_FRACT_F16,
+                 O::BUFFER_STORE_DWORD, O::S_ENDPGM}};
+  test.decoded_counts = {{"V_FRACT_F16", 10}};
+  test.ir_counts = {{" = FPFract32 ", 10}};
+  test.required_spirv = {" Fract ", " PackHalf2x16 "};
+  return test;
+}
+
 TestCase VectorCosF16CapturedSdwaAndEdges() {
   using O = ShaderOpcode;
 
@@ -19592,6 +19675,69 @@ TestCase VectorVopcCmpxGtU16CapturedSdwaExecMask() {
                 {O::V_MOV_B32, O::V_CMPX_GT_U16, O::BUFFER_STORE_DWORD,
                  O::S_ENDPGM}};
   test.decoded_counts = {{"V_CMPX_GT_U16", 2}};
+  return test;
+}
+
+TestCase VectorVopcCmpxLtU16CapturedSdwaExecMask() {
+  using O = ShaderOpcode;
+  struct CompareCase {
+    u32 lhs;
+    u32 rhs;
+    u32 incoming_exec;
+    u32 expected_exec;
+    u32 encoding = 0; // Captured SDWA, compact, VOP3, WORD_1 src0/src1.
+  };
+  const std::array<CompareCase, 12> cases{{
+      {0xffff0000u, 0x12340001u, 1, 1}, // Ignore high halves.
+      {0xabcd0001u, 0x12340001u, 1, 0}, // Strict comparison: equal is false.
+      {0x0000ffffu, 0x12340001u, 1, 0}, // Unsigned, not signed -1.
+      {0x00007fffu, 0x12348000u, 1, 1},
+      {0x00008000u, 0x12347fffu, 1, 0},
+      {0x12340000u, 0x56780000u, 1, 0},
+      {0x0000fffeu, 0x1234ffffu, 1, 1},
+      {0x00000000u, 0x12340001u, 0, 0}, // CMPX cannot reactivate an inactive lane.
+      {0x00008000u, 0x0000ffffu, 1, 1, 1},
+      {0x0000ffffu, 0x00008000u, 1, 0, 2},
+      {0x0001ffffu, 0x12340002u, 1, 1, 3},
+      {0x00000001u, 0x00020000u, 1, 1, 4},
+  }};
+  constexpr u32 vcc_hi = 0x89abcdefu;
+  TestCase test;
+  test.name = "VectorVopcCmpxLtU16CapturedSdwaExecMask";
+  for (const auto &entry : cases) {
+    test.initial.push_back(entry.lhs);
+  }
+  test.expected = test.initial;
+  auto &code = test.code;
+  for (u32 i = 0; i < cases.size(); ++i) {
+    const auto &entry = cases[i];
+    AppendVMovU32(&code, 30, i * 4u);
+    AppendBufferLoadDword(&code, 0, 30); // Runtime input prevents constant folding.
+    AppendVMovU32(&code, 1, entry.rhs);
+    AppendSMovLiteral(&code, 106, entry.rhs);
+    AppendSMovLiteral(&code, 107, vcc_hi);
+    code.push_back(EncodeSMovB32(126, InlineU32(entry.incoming_exec)));
+    switch (entry.encoding) {
+    case 1: code.push_back(0x7d720300u); break; // compact v0, v1
+    case 2: code.insert(code.end(), {0xd4b9007eu, 0x00020300u}); break;
+    case 3: code.insert(code.end(), {0x7d72d4f9u, 0x86050000u}); break;
+    case 4: code.insert(code.end(), {0x7d72d4f9u, 0x85060000u}); break;
+    default: code.insert(code.end(), {0x7d72d4f9u, 0x86060000u}); break;
+    }
+    code.push_back(EncodeSMovB32(20, 126)); // Snapshot EXEC before restoring it.
+    code.push_back(EncodeSMovB32(21, 127));
+    code.push_back(EncodeSMovB32(126, InlineU32(1)));
+    const u32 out = static_cast<u32>(cases.size()) + i * 4u;
+    AppendStoreSgprPair(&code, 20, out);
+    AppendStoreSgprPair(&code, 106, out + 2u); // CMPX must not overwrite either VCC half.
+    test.expected.insert(test.expected.end(),
+                         {entry.expected_exec, 0u, entry.rhs, vcc_hi});
+  }
+  AppendEnd(&code);
+  test.opcodes = {O::V_MOV_B32, O::S_MOV_B32, O::BUFFER_LOAD_DWORD,
+                  O::V_CMPX_LT_U16, O::BUFFER_STORE_DWORD, O::S_ENDPGM};
+  test.decoded_counts = {{"V_CMPX_LT_U16", cases.size()}};
+  test.required_spirv = {"OpULessThan"};
   return test;
 }
 
@@ -24930,6 +25076,8 @@ std::vector<TestCase> MakeCases() {
   AddCase(NativeAndSdwa16BitDestinationWrites);
   AddCase(VectorMinMaxMed3F16Ops);
   AddCase(VectorSpecialF16Ops);
+  AddCase(VectorFractF16CapturedAndEdges);
+  AddCase(VectorFractF16Modifiers);
   AddCase(VectorCosF16CapturedSdwaAndEdges);
   AddCase(VectorSinF16SdwaAndEdges);
   AddCase(VectorWritelaneIgnoresExecMask);
@@ -24982,6 +25130,7 @@ std::vector<TestCase> MakeCases() {
   AddCase(VectorVop3CmpxWritesExecMask);
   AddCase(VectorVopcSdwaCmpxWritesExecMask);
   AddCase(VectorVopcCmpxGtU16CapturedSdwaExecMask);
+  AddCase(VectorVopcCmpxLtU16CapturedSdwaExecMask);
   AddCase(VectorVopcCmpxNgtF16CapturedSdwaExecMask);
   AddCase(VectorCompareInvertedMaskSelect);
   AddCase(BranchSelect);
@@ -29206,6 +29355,26 @@ int main(int argc, char **argv) {
   std::setvbuf(stdout, nullptr, _IONBF, 0);
   EnsureConfigInitialized();
   CheckLeastRecentlyUsedCacheOrdering();
+  if (argc == 2 && std::strcmp(argv[1], "--cmpx-lt-u16-only") == 0) {
+    VulkanHarness vulkan;
+    RunCase(&vulkan, VectorVopcCmpxLtU16CapturedSdwaExecMask());
+    RunCase(&vulkan, VectorVopcCmpxGtU16CapturedSdwaExecMask());
+    RunCase(&vulkan, VectorVopcSdwaCmpxWritesExecMask());
+    RunCase(&vulkan, VectorVop3CmpxWritesExecMask());
+    RunCase(&vulkan, VectorVopcSdwaCmpxClassF32CapturedExecMask());
+    return 0;
+  }
+  if (argc == 2 && std::strcmp(argv[1], "--fract-f16-only") == 0) {
+    VulkanHarness vulkan;
+    RunCase(&vulkan, VectorFractF16CapturedAndEdges());
+    RunCase(&vulkan, VectorFractF16Modifiers());
+    RunCase(&vulkan, NativeAndSdwa16BitDestinationWrites());
+    RunCase(&vulkan, VectorSpecialF16Ops());
+    RunCase(&vulkan, VectorCosF16CapturedSdwaAndEdges());
+    RunCase(&vulkan, VectorSinF16SdwaAndEdges());
+    RunCase(&vulkan, VectorFloatConversionOps());
+    return 0;
+  }
   if (argc == 2 && std::strcmp(argv[1], "--packed-texture-only") == 0) {
     VulkanHarness vulkan;
     vulkan.CheckPackedTextureComponents();
